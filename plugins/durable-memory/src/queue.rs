@@ -99,7 +99,6 @@ impl Queue for MemoryQueue {
         lease: Duration,
         now: DateTime<Utc>,
     ) -> Result<Claimed> {
-        let lease_for = chrono::Duration::from_std(lease).unwrap_or(chrono::Duration::MAX);
         let mut inner = self.inner.lock();
         let mut inflight_total = 0u32;
         let mut inflight_by_key: HashMap<String, u32> = HashMap::new();
@@ -171,7 +170,7 @@ impl Queue for MemoryQueue {
                 *inflight_by_key.entry(k.clone()).or_default() += 1;
             }
             let token = Uuid::now_v7().to_string();
-            let expires_at = now + lease_for;
+            let expires_at = saturating_add(now, lease);
             inner.entries.get_mut(&id).unwrap().state = State::Leased {
                 token: token.clone(),
                 expires_at,
@@ -192,7 +191,6 @@ impl Queue for MemoryQueue {
         lease: Duration,
         now: DateTime<Utc>,
     ) -> Result<Vec<Lease>> {
-        let lease_for = chrono::Duration::from_std(lease).unwrap_or(chrono::Duration::MAX);
         let mut inner = self.inner.lock();
         let mut lost = vec![];
         for l in leases {
@@ -204,7 +202,7 @@ impl Queue for MemoryQueue {
                         },
                     ..
                 }) if *token == l.token => {
-                    *expires_at = now + lease_for;
+                    *expires_at = saturating_add(now, lease);
                 }
                 _ => lost.push(l.clone()),
             }

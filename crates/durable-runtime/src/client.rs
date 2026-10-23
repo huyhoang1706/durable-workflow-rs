@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use durable_core::{
     Backend, CreateOutcome, Event, NewRun, QueueItem, RateDecision, Run, RunFilter, RunId,
-    RunStatus, WorkflowDefinition,
+    RunStatus, WorkflowDefinition, saturating_add,
 };
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
@@ -64,6 +64,7 @@ impl RunHandle {
                 .store
                 .get_run(self.id)
                 .await?
+                .filter(|r| r.namespace == self.backend.namespace)
                 .ok_or(RunError::NotFound)?;
             match run.status {
                 RunStatus::Succeeded => {
@@ -110,6 +111,9 @@ impl StartOutcome {
 }
 
 /// Talks to the backends directly; works without a worker (e.g. in a web tier).
+///
+/// Scoped to the backend's namespace: runs, hooks and definitions of other
+/// namespaces are invisible to it and every by-id call treats them as missing.
 #[derive(Clone)]
 pub struct Client {
     backend: Backend,
@@ -122,6 +126,13 @@ impl Client {
 
     fn now(&self) -> DateTime<Utc> {
         self.backend.clock.now()
+    }
+
+    /// The run, if it exists in this client's namespace.
+    async fn scoped_run(&self, id: RunId) -> durable_core::Result<Run> {
+        self.get_run(id)
+            .await?
+            .ok_or_else(|| durable_core::Error::NotFound(format!("run {id}")))
     }
 
     async fn enqueue(&self, items: Vec<QueueItem>) -> durable_core::Result<()> {
@@ -153,7 +164,7 @@ impl Client {
         let def = self
             .backend
             .store
-            .get_definition(workflow)
+            .get_definition(&ns, workflow)
             .await?
             .unwrap_or_else(|| WorkflowDefinition::new(workflow));
         let now = self.now();
@@ -186,7 +197,7 @@ impl Client {
                 throttle_key,
                 deadline_at: def
                     .timeout_secs
-                    .map(|s| now + chrono::Duration::seconds(s as i64)),
+                    .map(|s| saturating_add(now, Duration::from_secs(s))),
                 at: now,
             })
             .await?;
@@ -221,13 +232,16 @@ impl Client {
     }
 
     pub async fn get_run(&self, id: RunId) -> durable_core::Result<Option<Run>> {
-        self.backend.store.get_run(id).await
+        let run = self.backend.store.get_run(id).await?;
+        Ok(run.filter(|r| r.namespace == self.backend.namespace))
     }
 
     /// Execution state of a run that is being executed right now, if the
     /// backend has a cache and a worker published it.
     pub async fn in_flight(&self, id: RunId) -> Option<crate::InFlight> {
-        crate::inflight::read(self.backend.cache.as_deref()?, id).await
+        let cache = self.backend.cache.as_deref()?;
+        self.get_run(id).await.ok()??;
+        crate::inflight::read(cache, id).await
     }
 
     pub async fn list_runs(&self, mut filter: RunFilter) -> durable_core::Result<Vec<Run>> {
@@ -238,10 +252,12 @@ impl Client {
     }
 
     pub async fn events(&self, id: RunId) -> durable_core::Result<Vec<Event>> {
+        self.scoped_run(id).await?;
         self.backend.store.load_events(id, 0).await
     }
 
     pub async fn signal(&self, id: RunId, name: &str, payload: Value) -> durable_core::Result<()> {
+        self.scoped_run(id).await?;
         let item = self
             .backend
             .store
@@ -255,7 +271,7 @@ impl Client {
         let item = self
             .backend
             .store
-            .resolve_hook(token, payload, self.now())
+            .resolve_hook(&self.backend.namespace, token, payload, self.now())
             .await?;
         self.enqueue(item.into_iter().collect()).await
     }
@@ -273,6 +289,7 @@ impl Client {
     }
 
     pub async fn cancel(&self, id: RunId, reason: Option<String>) -> durable_core::Result<()> {
+        self.scoped_run(id).await?;
         let item = self
             .backend
             .store
@@ -291,6 +308,7 @@ impl Client {
     /// Re-run a failed run from its failure point: succeeded steps stay
     /// memoized and failed steps get a fresh retry budget.
     pub async fn retry(&self, id: RunId) -> durable_core::Result<()> {
+        self.scoped_run(id).await?;
         let item = self.backend.store.retry_run(id, self.now()).await?;
         self.enqueue(vec![item]).await
     }

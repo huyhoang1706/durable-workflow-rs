@@ -8,7 +8,7 @@
 //! docker compose up -d
 //! DURABLE_DATABASE_URL=postgres://postgres:postgres@localhost/durable \
 //! DURABLE_REDIS_URL=redis://localhost DURABLE_ENABLE_API=1 cargo run -p standalone-worker
-//! curl -XPOST localhost:8080/durable/v1/workflows/images.resize/runs \
+//! curl -XPOST localhost:17080/durable/v1/workflows/images.resize/runs \
 //!      -H 'content-type: application/json' -d '{"input":{"images":[1,2,3,4,5,6,7,8]}}'
 //! ```
 

@@ -50,11 +50,12 @@ impl Store for CountingStore {
     }
     async fn resolve_hook(
         &self,
+        namespace: &str,
         token: &str,
         payload: Value,
         at: DateTime<Utc>,
     ) -> Result<Option<QueueItem>> {
-        self.inner.resolve_hook(token, payload, at).await
+        self.inner.resolve_hook(namespace, token, payload, at).await
     }
     async fn publish_event(
         &self,
@@ -84,11 +85,19 @@ impl Store for CountingStore {
     ) -> Result<Vec<QueueItem>> {
         self.inner.due_runs(namespace, before, limit).await
     }
-    async fn upsert_definitions(&self, defs: Vec<WorkflowDefinition>) -> Result<()> {
-        self.inner.upsert_definitions(defs).await
+    async fn upsert_definitions(
+        &self,
+        namespace: &str,
+        defs: Vec<WorkflowDefinition>,
+    ) -> Result<()> {
+        self.inner.upsert_definitions(namespace, defs).await
     }
-    async fn get_definition(&self, name: &str) -> Result<Option<WorkflowDefinition>> {
-        self.inner.get_definition(name).await
+    async fn get_definition(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<WorkflowDefinition>> {
+        self.inner.get_definition(namespace, name).await
     }
 }
 

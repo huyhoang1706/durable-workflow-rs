@@ -8,8 +8,12 @@ use serde_json::{Value, json};
 use crate::{secs, t0};
 
 pub fn new_run(workflow: &str, key: Option<&str>) -> NewRun {
+    new_run_in("ns", workflow, key)
+}
+
+pub fn new_run_in(namespace: &str, workflow: &str, key: Option<&str>) -> NewRun {
     NewRun {
-        namespace: "ns".into(),
+        namespace: namespace.into(),
         workflow: workflow.into(),
         input: json!({"n": 1}),
         idempotency_key: key.map(Into::into),
@@ -279,12 +283,12 @@ pub async fn hook_lifecycle(store: Arc<dyn Store>) {
     store.commit(c).await.unwrap();
 
     let item = store
-        .resolve_hook("tok", json!({"paid": true}), t0())
+        .resolve_hook("ns", "tok", json!({"paid": true}), t0())
         .await
         .unwrap();
     assert!(item.is_some());
     let err = store
-        .resolve_hook("nope", json!(1), t0())
+        .resolve_hook("ns", "nope", json!(1), t0())
         .await
         .unwrap_err();
     assert!(matches!(err, Error::NotFound(_)), "{err:?}");
@@ -350,7 +354,7 @@ pub async fn hook_dispose_releases_the_token(store: Arc<dyn Store>) {
     }];
     let out = store.commit(c).await.unwrap();
     let err = store
-        .resolve_hook("once", json!(1), t0())
+        .resolve_hook("ns", "once", json!(1), t0())
         .await
         .unwrap_err();
     assert!(matches!(err, Error::NotFound(_)), "{err:?}");
@@ -370,7 +374,12 @@ pub async fn hook_dispose_releases_the_token(store: Arc<dyn Store>) {
             ..
         }
     ));
-    assert!(store.resolve_hook("once", json!(1), t0()).await.is_ok());
+    assert!(
+        store
+            .resolve_hook("ns", "once", json!(1), t0())
+            .await
+            .is_ok()
+    );
 
     // Disposing a token the run no longer holds must not release b's claim.
     let mut c = Commit::new(a.id, out.last_seq, t0());
@@ -379,7 +388,12 @@ pub async fn hook_dispose_releases_the_token(store: Arc<dyn Store>) {
         token: "once".into(),
     }];
     store.commit(c).await.unwrap();
-    assert!(store.resolve_hook("once", json!(2), t0()).await.is_ok());
+    assert!(
+        store
+            .resolve_hook("ns", "once", json!(2), t0())
+            .await
+            .is_ok()
+    );
 }
 
 pub async fn event_reaches_only_matching_waits(store: Arc<dyn Store>) {
@@ -536,11 +550,78 @@ pub async fn list_runs_filters_and_limits(store: Arc<dyn Store>) {
 }
 
 pub async fn definitions_round_trip(store: Arc<dyn Store>) {
-    assert!(store.get_definition("d").await.unwrap().is_none());
+    assert!(store.get_definition("ns", "d").await.unwrap().is_none());
     let mut d = WorkflowDefinition::new("d");
     d.timeout_secs = Some(5);
-    store.upsert_definitions(vec![d.clone()]).await.unwrap();
-    assert_eq!(store.get_definition("d").await.unwrap(), Some(d));
+    store
+        .upsert_definitions("ns", vec![d.clone()])
+        .await
+        .unwrap();
+    assert_eq!(store.get_definition("ns", "d").await.unwrap(), Some(d));
+}
+
+pub async fn definitions_are_scoped_to_their_namespace(store: Arc<dyn Store>) {
+    let mut a = WorkflowDefinition::new("d");
+    a.timeout_secs = Some(5);
+    let mut b = WorkflowDefinition::new("d");
+    b.timeout_secs = Some(99);
+    store
+        .upsert_definitions("a", vec![a.clone()])
+        .await
+        .unwrap();
+    store
+        .upsert_definitions("b", vec![b.clone()])
+        .await
+        .unwrap();
+    assert_eq!(store.get_definition("a", "d").await.unwrap(), Some(a));
+    assert_eq!(store.get_definition("b", "d").await.unwrap(), Some(b));
+    assert!(store.get_definition("c", "d").await.unwrap().is_none());
+}
+
+pub async fn hooks_are_scoped_to_their_namespace(store: Arc<dyn Store>) {
+    let mut runs = vec![];
+    for ns in ["a", "b"] {
+        let run = store
+            .create_run(new_run_in(ns, "wf", None))
+            .await
+            .unwrap()
+            .run()
+            .clone();
+        let mut c = Commit::new(run.id, 1, t0());
+        c.hooks = vec![HookReg {
+            key: "h".into(),
+            token: "tok".into(),
+        }];
+        let out = store.commit(c).await.unwrap();
+        // The same token in another namespace is not a conflict.
+        assert_eq!(
+            out.generated[0].kind,
+            EventKind::HookCreated {
+                key: "h".into(),
+                token: "tok".into(),
+                conflict: false
+            }
+        );
+        let mut c = waiting(
+            &run,
+            out.last_seq,
+            vec![wait("h[recv]", WaitKind::Hook, "tok")],
+        );
+        c.wake_at = None;
+        store.commit(c).await.unwrap();
+        runs.push(run);
+    }
+    let item = store
+        .resolve_hook("b", "tok", json!(1), t0())
+        .await
+        .unwrap()
+        .expect("b's run wakes");
+    assert_eq!(item.run_id, runs[1].id);
+    let err = store
+        .resolve_hook("c", "tok", json!(1), t0())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::NotFound(_)), "{err:?}");
 }
 
 /// Generates one `#[tokio::test]` per Store conformance case.
@@ -576,6 +657,8 @@ macro_rules! store_conformance {
                     due_runs_returns_overdue_non_terminal,
                     list_runs_filters_and_limits,
                     definitions_round_trip,
+                    definitions_are_scoped_to_their_namespace,
+                    hooks_are_scoped_to_their_namespace,
                 ]
             );
         }

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use durable_workflow::{
     StepError, WfAsyncCtx, WorkerBuilder,
-    standalone::{ServeOptions, serve},
+    standalone::{DEFAULT_HTTP_ADDR, ServeOptions, serve},
 };
 use serde_json::Value;
 use tokio::{
@@ -130,4 +130,77 @@ async fn optional_ops_api_runs_workflows_registered_on_the_worker() {
     assert_eq!(http(addr, "GET", "/healthz", None, "").await.0, 200);
     stop.send(()).unwrap();
     task.await.unwrap();
+}
+
+#[tokio::test]
+async fn refuses_an_unauthenticated_ops_api_on_a_public_address() {
+    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let opts = ServeOptions {
+        enable_api: true,
+        ..Default::default()
+    };
+    let backend = durable_workflow::memory::backend();
+    // Returns before serving anything, so the shutdown future never matters.
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        serve(backend, listener, opts, configure, std::future::pending()),
+    )
+    .await
+    .expect("refuses immediately");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("without a token"), "{err}");
+}
+
+#[tokio::test]
+async fn an_unauthenticated_ops_api_is_allowed_on_loopback_or_when_opted_in() {
+    // Loopback (what `start` binds) needs no token.
+    let opts = ServeOptions {
+        enable_api: true,
+        ..Default::default()
+    };
+    let (addr, stop, task) = start(opts).await;
+    assert_eq!(http(addr, "GET", "/durable/v1/runs", None, "").await.0, 200);
+    stop.send(()).unwrap();
+    task.await.unwrap();
+
+    // A public address needs the explicit opt-in.
+    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let opts = ServeOptions {
+        enable_api: true,
+        allow_insecure_api: true,
+        ..Default::default()
+    };
+    let (tx, rx) = oneshot::channel::<()>();
+    let task = tokio::spawn(serve(
+        durable_workflow::memory::backend(),
+        listener,
+        opts,
+        configure,
+        async {
+            let _ = rx.await;
+        },
+    ));
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    assert_eq!(http(addr, "GET", "/durable/v1/runs", None, "").await.0, 200);
+    tx.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[test]
+fn serve_options_debug_redacts_the_api_token() {
+    let opts = ServeOptions {
+        api_token: Some("hunter2".into()),
+        ..Default::default()
+    };
+    let shown = format!("{opts:?}");
+    assert!(!shown.contains("hunter2"), "{shown}");
+    assert!(shown.contains("<redacted>"), "{shown}");
+}
+
+#[test]
+fn the_default_http_address_is_loopback_on_an_uncommon_port() {
+    let addr: std::net::SocketAddr = DEFAULT_HTTP_ADDR.parse().unwrap();
+    assert!(addr.ip().is_loopback());
+    assert!(addr.port() > 10_000);
 }

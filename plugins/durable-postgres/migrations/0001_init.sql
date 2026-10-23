@@ -54,9 +54,13 @@ CREATE TABLE {schema}.signals (
 
 CREATE INDEX signals_pending ON {schema}.signals (run_id, created_at, id) WHERE consumed_seq IS NULL;
 
+-- Hook tokens are scoped to a namespace, so namespaces cannot claim each
+-- other's tokens.
 CREATE TABLE {schema}.hooks (
-    token   text PRIMARY KEY,
-    run_id  uuid NOT NULL REFERENCES {schema}.runs (id) ON DELETE CASCADE
+    namespace  text NOT NULL,
+    token      text NOT NULL,
+    run_id     uuid NOT NULL REFERENCES {schema}.runs (id) ON DELETE CASCADE,
+    PRIMARY KEY (namespace, token)
 );
 
 CREATE INDEX hooks_run ON {schema}.hooks (run_id);
@@ -75,6 +79,8 @@ CREATE TABLE {schema}.waits (
 CREATE INDEX waits_event ON {schema}.waits (name) WHERE kind = 'event';
 
 CREATE TABLE {schema}.workflow_definitions (
-    name        text  PRIMARY KEY,
-    definition  jsonb NOT NULL
+    namespace   text  NOT NULL,
+    name        text  NOT NULL,
+    definition  jsonb NOT NULL,
+    PRIMARY KEY (namespace, name)
 );

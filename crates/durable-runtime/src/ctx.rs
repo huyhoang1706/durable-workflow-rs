@@ -62,7 +62,7 @@ impl WfAsyncCtx {
         let start = StepStart::Async(Box::new(move || {
             Box::pin(async move { f().await.map_err(Into::into).and_then(encode_step) })
         }));
-        StepBuilder::new(self.core.clone(), self.core.key_for(name), start)
+        StepBuilder::new(self.core.clone(), self.core.user_key(name), start)
     }
 
     /// A blocking step: runs on the compute pool, never on a tokio worker thread.
@@ -72,10 +72,19 @@ impl WfAsyncCtx {
         E: Into<StepError>,
         F: FnOnce() -> Result<T, E> + Send + 'static,
     {
+        self.blocking_step_at(self.core.user_key(name), f)
+    }
+
+    fn blocking_step_at<T, E, F>(&self, key: String, f: F) -> StepBuilder<T>
+    where
+        T: Serialize + DeserializeOwned + Send + 'static,
+        E: Into<StepError>,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
         let start = StepStart::Blocking(Box::new(move || {
             f().map_err(Into::into).and_then(encode_step)
         }));
-        StepBuilder::new(self.core.clone(), self.core.key_for(name), start)
+        StepBuilder::new(self.core.clone(), key, start)
     }
 
     /// Parallel fan-out on the compute pool; each item is memoized as `name[i]`.
@@ -91,14 +100,15 @@ impl WfAsyncCtx {
         E: Into<StepError>,
         F: Fn(I) -> Result<T, E> + Send + Sync + 'static,
     {
+        self.core.check_name(name);
         let f = Arc::new(f);
         let steps: Vec<_> = items
             .into_iter()
             .enumerate()
             .map(|(i, item)| {
                 let f = f.clone();
-                self.step_blocking(&format!("{name}[{i}]"), move || f(item))
-                    .into_future()
+                let key = self.core.key_for(&format!("{name}[{i}]"));
+                self.blocking_step_at(key, move || f(item)).into_future()
             })
             .collect();
         Box::pin(futures::future::try_join_all(steps))
@@ -110,7 +120,7 @@ impl WfAsyncCtx {
         name: &str,
         dur: Duration,
     ) -> impl Future<Output = Result<(), WorkflowError>> + Send + 'static {
-        let (core, key) = (self.core.clone(), self.core.key_for(name));
+        let (core, key) = (self.core.clone(), self.core.user_key(name));
         async move {
             match CmdFuture::new(
                 core.clone(),
@@ -130,7 +140,8 @@ impl WfAsyncCtx {
         &self,
         name: &str,
     ) -> WaitBuilder<T> {
-        WaitBuilder::new(self.core.clone(), WaitKind::Signal, name, name)
+        let key = self.core.user_key(name);
+        WaitBuilder::new(self.core.clone(), WaitKind::Signal, key, name)
     }
 
     /// Wait for a published event `name`; narrow with `.filter(json)`.
@@ -139,7 +150,8 @@ impl WfAsyncCtx {
         &self,
         name: &str,
     ) -> WaitBuilder<T> {
-        WaitBuilder::new(self.core.clone(), WaitKind::Event, name, name)
+        let key = self.core.user_key(name);
+        WaitBuilder::new(self.core.clone(), WaitKind::Event, key, name)
     }
 
     /// A webhook endpoint for this run; `hook.token()` identifies it.
@@ -165,7 +177,7 @@ impl WfAsyncCtx {
         name: &str,
         token: Option<String>,
     ) -> impl Future<Output = Result<Hook<T>, WorkflowError>> + Send + 'static {
-        let (core, key) = (self.core.clone(), self.core.key_for(name));
+        let (core, key) = (self.core.clone(), self.core.user_key(name));
         async move {
             match CmdFuture::new(core.clone(), key.clone(), CmdKind::Hook { token }).await? {
                 Resolution::Hook {
@@ -344,8 +356,7 @@ pub struct WaitBuilder<T> {
 }
 
 impl<T> WaitBuilder<T> {
-    fn new(core: Arc<Core>, kind: WaitKind, key_name: &str, name: &str) -> Self {
-        let key = core.key_for(key_name);
+    fn new(core: Arc<Core>, kind: WaitKind, key: String, name: &str) -> Self {
         let cfg = WaitCfg {
             core,
             key,
@@ -445,7 +456,7 @@ impl<T> Hook<T> {
     /// may claim it. The run keeps going.
     pub fn dispose(self) -> impl Future<Output = Result<(), WorkflowError>> + Send + 'static {
         let core = self.core.clone();
-        let key = core.key_for(&format!("{}:dispose", self.key));
+        let key = core.key_for(&format!("{}[dispose]", self.key));
         let token = self.token;
         async move {
             match CmdFuture::new(core.clone(), key.clone(), CmdKind::HookDispose { token }).await? {
@@ -458,12 +469,8 @@ impl<T> Hook<T> {
 
 impl<T: DeserializeOwned + Send + 'static> Hook<T> {
     pub fn recv(&self) -> WaitBuilder<T> {
-        WaitBuilder::<T>::new(
-            self.core.clone(),
-            WaitKind::Hook,
-            &format!("{}:recv", self.key),
-            &self.token,
-        )
+        let key = self.core.key_for(&format!("{}[recv]", self.key));
+        WaitBuilder::<T>::new(self.core.clone(), WaitKind::Hook, key, &self.token)
     }
 }
 
