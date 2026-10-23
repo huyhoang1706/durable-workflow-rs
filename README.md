@@ -110,11 +110,14 @@ Replay re-runs your workflow function against the recorded log, so the body must
   dereferenced outside a step and turns the mistake into a visible engine fault. Register
   deterministic, read-only config with `.dep_pure()` to use it in the body.
 - Use `ctx.now()`, `ctx.random_u64()`, `ctx.uuid()` instead of the system clock and RNG.
+  `ctx.uuid()` is a UUIDv7 stamped with `ctx.now()`, strictly increasing within a run.
 - Await only `ctx` futures. Awaiting anything else (a raw `tokio::sleep`, a channel) is detected and
   reported as an engine fault.
-- Steps are matched by key: your name plus an occurrence counter (`charge`, `charge#1`). Renaming a
-  step, or changing its kind, for an in-flight run is reported as non-determinism. The run stays
-  open (visible via `last_error`) and resumes once a compatible worker is deployed.
+- Steps are matched by key: your name plus an occurrence counter (`charge`, `charge#1`). Names of
+  steps, sleeps, waits and hooks must be non-empty and may not contain `#`, `[` or `]`, which
+  generated keys use; such a name faults the run. Renaming a step, or changing its kind, for an
+  in-flight run is reported as non-determinism. The run stays open (visible via `last_error`) and
+  resumes once a compatible worker is deployed.
 
 ## At-least-once semantics
 
@@ -167,7 +170,12 @@ durable signal <run-id> <name> --payload '...'      durable event send <name> --
 
 Standalone worker: `durable_workflow::standalone::run(Config::from_env()?, |w| w.register_default::<MyWorkflow>())`
 handles SIGTERM/SIGINT (drain, then hand back anything still running), health endpoints, the optional
-ops API (`DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`) and tracing.
+ops API (`DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`) and tracing. It listens on `DURABLE_HTTP_ADDR`,
+`127.0.0.1:17080` by default; in a container set `0.0.0.0:17080` so probes can reach it. It refuses
+to serve the ops API without a token on a non-loopback address unless `DURABLE_API_INSECURE=1` is set.
+
+A `Client` (and so the ops API and the CLI) only sees its backend's namespace: runs, hook tokens and
+workflow definitions of other namespaces sharing the same database are invisible to it.
 
 ## Writing a plugin
 

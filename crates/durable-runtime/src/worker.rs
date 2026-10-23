@@ -1,10 +1,13 @@
-use std::{collections::HashMap, future::Future, marker::PhantomData, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, future::Future, marker::PhantomData, panic::AssertUnwindSafe, sync::Arc,
+    time::Duration,
+};
 
 use durable_core::{
     Backend, ClaimLimits, Commit, ComputePool, EventKind, Lease, QueueScope, RunId, ThrottleLimit,
     WorkflowDefinition,
 };
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Serialize, de::DeserializeOwned};
@@ -317,7 +320,12 @@ impl Worker {
         tasks.push(tokio::spawn(async move {
             let defs: Vec<WorkflowDefinition> =
                 boot.workflows.iter().map(|w| w.definition()).collect();
-            if let Err(e) = boot.backend.store.upsert_definitions(defs).await {
+            if let Err(e) = boot
+                .backend
+                .store
+                .upsert_definitions(&boot.backend.namespace, defs)
+                .await
+            {
                 tracing::error!("definition sync failed: {e}");
             }
             // `send_replace`: `send` drops the value when nobody is subscribed yet.
@@ -526,11 +534,24 @@ async fn run_one(
         crate::inflight::write(&**c, run_id, &state).await;
     }
     let exceeded = deliveries > sh.cfg.max_deliveries;
-    let outcome = if exceeded {
-        poison(&sh, run_id).await
-    } else {
-        engine::execute(&sh.env, &*wf, run_id, lost).await
+    // A panic (engine bug, misbehaving plugin) must still release the lease
+    // below; otherwise the lease keeper would renew it forever.
+    let execution = async {
+        if exceeded {
+            poison(&sh, run_id).await
+        } else {
+            engine::execute(&sh.env, &*wf, run_id, lost).await
+        }
     };
+    let outcome = AssertUnwindSafe(execution)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|p| {
+            Err(durable_core::Error::Backend(format!(
+                "execution panicked: {}",
+                crate::driver::panic_message(p)
+            )))
+        });
     let now = sh.backend.clock.now();
     let queue = &sh.backend.queue;
     let acked = match outcome {

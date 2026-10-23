@@ -8,7 +8,7 @@
 
 use durable_core::{Backend, Error};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BackendConfig {
     pub database_url: String,
     pub redis_url: Option<String>,
@@ -17,6 +17,18 @@ pub struct BackendConfig {
     pub schema: String,
     /// Run migrations while building (safe from every process at boot).
     pub migrate: bool,
+}
+
+impl std::fmt::Debug for BackendConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackendConfig")
+            .field("database_url", &redact_url(&self.database_url))
+            .field("redis_url", &self.redis_url.as_deref().map(redact_url))
+            .field("namespace", &self.namespace)
+            .field("schema", &self.schema)
+            .field("migrate", &self.migrate)
+            .finish()
+    }
 }
 
 impl BackendConfig {
@@ -86,5 +98,46 @@ impl BackendConfig {
         Err(Error::Config(
             "no Redis URL given and the `memory` feature is off".into(),
         ))
+    }
+}
+
+/// `scheme://user:secret@host/...` with the password replaced, so connection
+/// URLs can be logged.
+fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "<redacted>".into();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    match authority.rsplit_once('@') {
+        Some((userinfo, host)) => {
+            let user = userinfo.split_once(':').map_or(userinfo, |(u, _)| u);
+            let secret = if userinfo.contains(':') { ":***" } else { "" };
+            format!("{scheme}://{user}{secret}@{host}{tail}")
+        }
+        None => url.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_never_contains_passwords() {
+        let mut c = BackendConfig::new("postgres://app:hunter2@db:5432/app?sslmode=require");
+        c.redis_url = Some("redis://:s3cret@cache:6379/0".into());
+        let shown = format!("{c:?}");
+        assert!(
+            !shown.contains("hunter2") && !shown.contains("s3cret"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("postgres://app:***@db:5432/app?sslmode=require"),
+            "{shown}"
+        );
+        assert!(shown.contains("redis://:***@cache:6379/0"), "{shown}");
+        assert_eq!(redact_url("postgres://db/app"), "postgres://db/app");
+        assert_eq!(redact_url("not a url"), "<redacted>");
     }
 }

@@ -204,6 +204,98 @@ impl PostgresStore {
     }
 }
 
+impl PostgresStore {
+    /// Make the stored open waits equal `waits`. Most commits (step results,
+    /// timers) leave them unchanged, so they are only rewritten on a change.
+    async fn sync_waits(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        run_id: RunId,
+        waits: &[WaitReg],
+    ) -> Result<()> {
+        let table = self.t("waits");
+        let stored: Vec<WaitRow> = q(format!(
+            "SELECT key, kind, name, filter, timeout_at FROM {table} WHERE run_id = $1"
+        ))
+        .bind(run_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(be)?
+        .iter()
+        .map(|r| WaitRow {
+            key: r.get("key"),
+            kind: r.get("kind"),
+            name: r.get("name"),
+            filter: r.get("filter"),
+            timeout_us: r
+                .get::<Option<DateTime<Utc>>, _>("timeout_at")
+                .map(|t| t.timestamp_micros()),
+        })
+        .collect();
+        let wanted: Vec<WaitRow> = waits.iter().map(WaitRow::from).collect();
+        if same_waits(stored, wanted) {
+            return Ok(());
+        }
+        q(format!("DELETE FROM {table} WHERE run_id = $1"))
+            .bind(run_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(be)?;
+        if waits.is_empty() {
+            return Ok(());
+        }
+        let keys: Vec<&str> = waits.iter().map(|w| w.key.as_str()).collect();
+        let kinds: Vec<&str> = waits.iter().map(|w| wait_kind_str(w.kind)).collect();
+        let names: Vec<&str> = waits.iter().map(|w| w.name.as_str()).collect();
+        let filters: Vec<Option<Value>> = waits.iter().map(|w| w.filter.clone()).collect();
+        let timeouts: Vec<Option<DateTime<Utc>>> = waits.iter().map(|w| w.timeout_at).collect();
+        q(format!(
+            "INSERT INTO {table} (run_id, key, kind, name, filter, timeout_at)
+             SELECT $1, w.key, w.kind, w.name, w.filter, w.timeout_at
+             FROM UNNEST($2::text[], $3::text[], $4::text[], $5::jsonb[], $6::timestamptz[])
+                  AS w(key, kind, name, filter, timeout_at)"
+        ))
+        .bind(run_id)
+        .bind(&keys)
+        .bind(&kinds)
+        .bind(&names)
+        .bind(&filters)
+        .bind(&timeouts)
+        .execute(&mut **tx)
+        .await
+        .map_err(be)?;
+        Ok(())
+    }
+}
+
+/// A wait as stored. Timestamps compare at Postgres' microsecond precision.
+#[derive(PartialEq)]
+struct WaitRow {
+    key: String,
+    kind: String,
+    name: String,
+    filter: Option<Value>,
+    timeout_us: Option<i64>,
+}
+
+impl From<&WaitReg> for WaitRow {
+    fn from(w: &WaitReg) -> Self {
+        Self {
+            key: w.key.clone(),
+            kind: wait_kind_str(w.kind).into(),
+            name: w.name.clone(),
+            filter: w.filter.clone(),
+            timeout_us: w.timeout_at.map(|t| t.timestamp_micros()),
+        }
+    }
+}
+
+fn same_waits(mut a: Vec<WaitRow>, mut b: Vec<WaitRow>) -> bool {
+    a.sort_by(|x, y| x.key.cmp(&y.key));
+    b.sort_by(|x, y| x.key.cmp(&y.key));
+    a == b
+}
+
 fn inbox_name(kind: &str, name: &str) -> String {
     match kind {
         "hook" => format!("hook:{name}"),
@@ -348,10 +440,12 @@ impl Store for PostgresStore {
         if run.last_seq != c.expected_seq || run.status.is_terminal() {
             return Err(Error::Conflict);
         }
-        let events_table = self.t("run_events");
         let mut seq = run.last_seq as i64;
         let mut terminal: Option<RunStatus> = None;
         let (mut output, mut error) = (run.output.clone(), run.error.clone());
+        // Every appended event, written in one statement at the end.
+        let mut appended: Vec<(i64, Value)> = Vec::with_capacity(c.events.len());
+        let mut disposed: Vec<&str> = vec![];
 
         for kind in &c.events {
             match kind {
@@ -364,21 +458,22 @@ impl Store for PostgresStore {
                     terminal = Some(RunStatus::Failed);
                 }
                 EventKind::RunCancelled { .. } => terminal = Some(RunStatus::Cancelled),
-                EventKind::HookDisposed { token, .. } => {
-                    q(format!(
-                        "DELETE FROM {} WHERE token = $1 AND run_id = $2",
-                        self.t("hooks")
-                    ))
-                    .bind(token)
-                    .bind(run.id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(be)?;
-                }
+                EventKind::HookDisposed { token, .. } => disposed.push(token),
                 _ => {}
             }
             seq += 1;
-            insert_event(&mut tx, &events_table, run.id, seq, c.at, kind).await?;
+            appended.push((seq, kind_to_json(kind)?));
+        }
+        if !disposed.is_empty() {
+            q(format!(
+                "DELETE FROM {} WHERE run_id = $1 AND token = ANY($2)",
+                self.t("hooks")
+            ))
+            .bind(run.id)
+            .bind(&disposed)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
         }
 
         let mut generated = vec![];
@@ -393,8 +488,8 @@ impl Store for PostgresStore {
 
         for h in &c.hooks {
             let held = q(format!(
-                "INSERT INTO {hooks} (token, run_id) VALUES ($1, $2)
-                 ON CONFLICT (token) DO UPDATE SET run_id = EXCLUDED.run_id
+                "INSERT INTO {hooks} (namespace, token, run_id) VALUES ($3, $1, $2)
+                 ON CONFLICT (namespace, token) DO UPDATE SET run_id = EXCLUDED.run_id
                  WHERE {hooks}.run_id = EXCLUDED.run_id
                     OR EXISTS (SELECT 1 FROM {runs} r WHERE r.id = {hooks}.run_id AND r.status IN {TERMINAL})
                  RETURNING run_id",
@@ -403,6 +498,7 @@ impl Store for PostgresStore {
             ))
             .bind(&h.token)
             .bind(run.id)
+            .bind(&run.namespace)
             .fetch_optional(&mut *tx)
             .await
             .map_err(be)?;
@@ -412,36 +508,13 @@ impl Store for PostgresStore {
                 conflict: held.is_none(),
             };
             seq += 1;
-            insert_event(&mut tx, &events_table, run.id, seq, c.at, &kind).await?;
+            appended.push((seq, kind_to_json(&kind)?));
             push_generated(seq, kind);
         }
 
-        // Open waits are replaced wholesale: the caller sends every wait still open.
         let waits_table = self.t("waits");
-        q(format!("DELETE FROM {waits_table} WHERE run_id = $1"))
-            .bind(run.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(be)?;
-
         if terminal.is_none() {
-            let mut open: Vec<&WaitReg> = vec![];
-            for w in &c.waits {
-                q(format!(
-                    "INSERT INTO {waits_table} (run_id, key, kind, name, filter, timeout_at)
-                     VALUES ($1, $2, $3, $4, $5, $6)"
-                ))
-                .bind(run.id)
-                .bind(&w.key)
-                .bind(wait_kind_str(w.kind))
-                .bind(&w.name)
-                .bind(&w.filter)
-                .bind(w.timeout_at)
-                .execute(&mut *tx)
-                .await
-                .map_err(be)?;
-                open.push(w);
-            }
+            self.sync_waits(&mut tx, run.id, &c.waits).await?;
 
             // Consume matching inbox signals, oldest first.
             let signals_table = self.t("signals");
@@ -464,7 +537,8 @@ impl Store for PostgresStore {
             })
             .collect();
 
-            for w in open {
+            let (mut consumed_ids, mut consumed_seqs, mut closed_keys) = (vec![], vec![], vec![]);
+            for w in &c.waits {
                 let found = pending
                     .iter()
                     .position(|(_, name, target, _)| match w.kind {
@@ -474,41 +548,65 @@ impl Store for PostgresStore {
                 let Some(i) = found else { continue };
                 let (sid, _, _, payload) = pending.remove(i);
                 seq += 1;
-                q(format!(
-                    "UPDATE {signals_table} SET consumed_seq = $2 WHERE id = $1"
-                ))
-                .bind(sid)
-                .bind(seq)
-                .execute(&mut *tx)
-                .await
-                .map_err(be)?;
-                q(format!(
-                    "DELETE FROM {waits_table} WHERE run_id = $1 AND key = $2"
-                ))
-                .bind(run.id)
-                .bind(&w.key)
-                .execute(&mut *tx)
-                .await
-                .map_err(be)?;
+                consumed_ids.push(sid);
+                consumed_seqs.push(seq);
+                closed_keys.push(w.key.as_str());
                 let kind = EventKind::SignalReceived {
                     key: w.key.clone(),
                     signal_id: sid.to_string(),
                     payload,
                 };
-                insert_event(&mut tx, &events_table, run.id, seq, c.at, &kind).await?;
+                appended.push((seq, kind_to_json(&kind)?));
                 push_generated(seq, kind);
             }
-        } else {
-            q(format!("DELETE FROM {} WHERE run_id = $1", self.t("hooks")))
-                .bind(run.id)
+            if !consumed_ids.is_empty() {
+                q(format!(
+                    "UPDATE {signals_table} s SET consumed_seq = d.seq
+                     FROM UNNEST($1::uuid[], $2::bigint[]) AS d(id, seq) WHERE s.id = d.id"
+                ))
+                .bind(&consumed_ids)
+                .bind(&consumed_seqs)
                 .execute(&mut *tx)
                 .await
                 .map_err(be)?;
+                q(format!(
+                    "DELETE FROM {waits_table} WHERE run_id = $1 AND key = ANY($2)"
+                ))
+                .bind(run.id)
+                .bind(&closed_keys)
+                .execute(&mut *tx)
+                .await
+                .map_err(be)?;
+            }
+        } else {
+            for table in ["waits", "hooks"] {
+                q(format!("DELETE FROM {} WHERE run_id = $1", self.t(table)))
+                    .bind(run.id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(be)?;
+            }
             q(format!(
                 "DELETE FROM {} WHERE run_id = $1 AND consumed_seq IS NULL",
                 self.t("signals")
             ))
             .bind(run.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+        }
+
+        if !appended.is_empty() {
+            let (seqs, kinds): (Vec<i64>, Vec<Value>) = appended.into_iter().unzip();
+            q(format!(
+                "INSERT INTO {} (run_id, seq, at, kind)
+                 SELECT $1, e.seq, $2, e.kind FROM UNNEST($3::bigint[], $4::jsonb[]) AS e(seq, kind)",
+                self.t("run_events")
+            ))
+            .bind(run.id)
+            .bind(c.at)
+            .bind(&seqs)
+            .bind(&kinds)
             .execute(&mut *tx)
             .await
             .map_err(be)?;
@@ -567,15 +665,17 @@ impl Store for PostgresStore {
 
     async fn resolve_hook(
         &self,
+        namespace: &str,
         token: &str,
         payload: Value,
         at: DateTime<Utc>,
     ) -> Result<Option<QueueItem>> {
         let not_found = || Error::NotFound(format!("hook {token}"));
         let run_id: Uuid = q_scalar(format!(
-            "SELECT run_id FROM {} WHERE token = $1",
+            "SELECT run_id FROM {} WHERE namespace = $1 AND token = $2",
             self.t("hooks")
         ))
+        .bind(namespace)
         .bind(token)
         .fetch_optional(&self.pool)
         .await
@@ -600,54 +700,102 @@ impl Store for PostgresStore {
         data: Value,
         at: DateTime<Utc>,
     ) -> Result<Vec<QueueItem>> {
-        let candidates = q(format!(
-            "SELECT w.run_id, w.key FROM {waits} w JOIN {runs} r ON r.id = w.run_id
-             WHERE w.kind = 'event' AND w.name = $1 AND r.namespace = $2
-               AND r.status NOT IN {TERMINAL}
-               AND (w.filter IS NULL OR $3::jsonb @> w.filter)
-             ORDER BY w.run_id, w.key",
+        let mut tx = self.pool.begin().await.map_err(be)?;
+        // Lock every candidate run at once, in id order so concurrent
+        // publishers cannot deadlock.
+        let runs: Vec<Run> = q(format!(
+            "SELECT * FROM {runs} WHERE namespace = $2 AND status NOT IN {TERMINAL}
+               AND id IN (SELECT run_id FROM {waits}
+                          WHERE kind = 'event' AND name = $1
+                            AND (filter IS NULL OR $3::jsonb @> filter))
+             ORDER BY id FOR UPDATE",
             waits = self.t("waits"),
             runs = self.t("runs"),
         ))
         .bind(name)
         .bind(namespace)
         .bind(&data)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(be)?
+        .iter()
+        .map(run_from_row)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(be)?;
+        if runs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Re-read the waits under the locks: commits change them only while
+        // holding the run lock, so this view is stable until we commit.
+        let ids: Vec<Uuid> = runs.iter().map(|r| r.id).collect();
+        let open: Vec<(Uuid, String)> = q(format!(
+            "SELECT run_id, key FROM {} WHERE run_id = ANY($1) AND kind = 'event' AND name = $2
+               AND (filter IS NULL OR $3::jsonb @> filter)
+             ORDER BY run_id, key",
+            self.t("waits")
+        ))
+        .bind(&ids)
+        .bind(name)
+        .bind(&data)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(be)?
+        .iter()
+        .map(|r| (r.get("run_id"), r.get("key")))
+        .collect();
+        if open.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let (run_ids, keys): (Vec<Uuid>, Vec<String>) = open.iter().cloned().unzip();
+        let signal_ids: Vec<Uuid> = open.iter().map(|_| Uuid::now_v7()).collect();
+        q(format!(
+            "INSERT INTO {} (id, run_id, name, target_key, payload, created_at)
+             SELECT s.id, s.run_id, $4, s.target_key, $5, $6
+             FROM UNNEST($1::uuid[], $2::uuid[], $3::text[]) AS s(id, run_id, target_key)",
+            self.t("signals")
+        ))
+        .bind(&signal_ids)
+        .bind(&run_ids)
+        .bind(&keys)
+        .bind(format!("event:{name}"))
+        .bind(&data)
+        .bind(at)
+        .execute(&mut *tx)
         .await
         .map_err(be)?;
 
-        let mut items = vec![];
-        for c in candidates {
-            let (run_id, key): (Uuid, String) = (c.get("run_id"), c.get("key"));
-            let mut tx = self.pool.begin().await.map_err(be)?;
-            let Ok(run) = self.lock_live_run(&mut tx, run_id).await else {
-                continue;
-            };
-            // Re-check under the lock: the wait may have been consumed meanwhile.
-            let still_open: bool = q_scalar(format!(
-                "SELECT EXISTS (SELECT 1 FROM {} WHERE run_id = $1 AND key = $2)",
-                self.t("waits")
+        // Wake the waiting runs, once each; report one item per satisfied wait.
+        let waiting: Vec<&Run> = runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Waiting && run_ids.contains(&r.id))
+            .collect();
+        let wakes: Vec<(Uuid, DateTime<Utc>)> = waiting
+            .iter()
+            .map(|r| (r.id, r.wake_at.map_or(at, |w| w.min(at))))
+            .collect();
+        if !wakes.is_empty() {
+            let (wake_ids, wake_ats): (Vec<Uuid>, Vec<DateTime<Utc>>) =
+                wakes.iter().copied().unzip();
+            q(format!(
+                "UPDATE {} r SET wake_at = w.at, updated_at = $3
+                 FROM UNNEST($1::uuid[], $2::timestamptz[]) AS w(id, at) WHERE r.id = w.id",
+                self.t("runs")
             ))
-            .bind(run_id)
-            .bind(&key)
-            .fetch_one(&mut *tx)
+            .bind(&wake_ids)
+            .bind(&wake_ats)
+            .bind(at)
+            .execute(&mut *tx)
             .await
             .map_err(be)?;
-            if !still_open {
-                continue;
-            }
-            let item = self
-                .deliver_tx(
-                    &mut tx,
-                    &run,
-                    &format!("event:{name}"),
-                    Some(&key),
-                    data.clone(),
-                    at,
-                )
-                .await?;
-            tx.commit().await.map_err(be)?;
-            items.extend(item);
+        }
+        tx.commit().await.map_err(be)?;
+
+        let mut items = vec![];
+        for (run, (_, wake)) in waiting.iter().zip(&wakes) {
+            let satisfied = run_ids.iter().filter(|id| **id == run.id).count();
+            items.extend(std::iter::repeat_n(run.queue_item(*wake), satisfied));
         }
         Ok(items)
     }
@@ -745,13 +893,18 @@ impl Store for PostgresStore {
             .collect()
     }
 
-    async fn upsert_definitions(&self, defs: Vec<WorkflowDefinition>) -> Result<()> {
+    async fn upsert_definitions(
+        &self,
+        namespace: &str,
+        defs: Vec<WorkflowDefinition>,
+    ) -> Result<()> {
         for d in defs {
             q(format!(
-                "INSERT INTO {} (name, definition) VALUES ($1, $2)
-                 ON CONFLICT (name) DO UPDATE SET definition = EXCLUDED.definition",
+                "INSERT INTO {} (namespace, name, definition) VALUES ($1, $2, $3)
+                 ON CONFLICT (namespace, name) DO UPDATE SET definition = EXCLUDED.definition",
                 self.t("workflow_definitions")
             ))
+            .bind(namespace)
             .bind(&d.name)
             .bind(serde_json::to_value(&d).map_err(|e| Error::Backend(e.to_string()))?)
             .execute(&self.pool)
@@ -761,11 +914,16 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn get_definition(&self, name: &str) -> Result<Option<WorkflowDefinition>> {
+    async fn get_definition(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<WorkflowDefinition>> {
         let v: Option<Value> = q_scalar(format!(
-            "SELECT definition FROM {} WHERE name = $1",
+            "SELECT definition FROM {} WHERE namespace = $1 AND name = $2",
             self.t("workflow_definitions")
         ))
+        .bind(namespace)
         .bind(name)
         .fetch_optional(&self.pool)
         .await

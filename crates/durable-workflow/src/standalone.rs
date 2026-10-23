@@ -21,15 +21,32 @@ use tokio::net::TcpListener;
 use crate::connect::BackendConfig;
 
 /// Everything the HTTP side and the worker need beyond the backend itself.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServeOptions {
     /// Mount the ops API under `/durable`.
     pub enable_api: bool,
     /// Require this bearer token on the ops API (probes stay open).
     pub api_token: Option<String>,
+    /// Serve the ops API without a token on a non-loopback address. Off by
+    /// default: anyone who can reach the port could start, cancel and signal
+    /// runs.
+    pub allow_insecure_api: bool,
     pub concurrency: Option<usize>,
     pub compute_threads: Option<usize>,
     pub drain_timeout: Duration,
+}
+
+impl std::fmt::Debug for ServeOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServeOptions")
+            .field("enable_api", &self.enable_api)
+            .field("api_token", &self.api_token.as_ref().map(|_| "<redacted>"))
+            .field("allow_insecure_api", &self.allow_insecure_api)
+            .field("concurrency", &self.concurrency)
+            .field("compute_threads", &self.compute_threads)
+            .field("drain_timeout", &self.drain_timeout)
+            .finish()
+    }
 }
 
 impl Default for ServeOptions {
@@ -37,6 +54,7 @@ impl Default for ServeOptions {
         Self {
             enable_api: false,
             api_token: None,
+            allow_insecure_api: false,
             concurrency: None,
             compute_threads: None,
             drain_timeout: Duration::from_secs(30),
@@ -52,12 +70,18 @@ pub struct Config {
     pub serve: ServeOptions,
 }
 
+/// Loopback only, so health and ops endpoints are not exposed by accident;
+/// set `DURABLE_HTTP_ADDR=0.0.0.0:17080` to accept outside connections.
+pub const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:17080";
+
 impl Config {
     /// Backend: see [`BackendConfig::from_env`]. Plus `DURABLE_HTTP_ADDR`
-    /// (default `0.0.0.0:8080`), `DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`,
-    /// `DURABLE_CONCURRENCY`, `DURABLE_COMPUTE_THREADS`, `DURABLE_DRAIN_SECS`.
+    /// (default [`DEFAULT_HTTP_ADDR`]), `DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`,
+    /// `DURABLE_API_INSECURE`, `DURABLE_CONCURRENCY`, `DURABLE_COMPUTE_THREADS`,
+    /// `DURABLE_DRAIN_SECS`.
     pub fn from_env() -> Result<Self, Error> {
         let var = |k: &str| std::env::var(k).ok();
+        let flag = |k: &str| matches!(var(k).as_deref(), Some("1" | "true" | "yes"));
         let parse = |k: &str| -> Result<Option<usize>, Error> {
             var(k)
                 .map(|v| {
@@ -67,17 +91,14 @@ impl Config {
                 .transpose()
         };
         let http_addr = var("DURABLE_HTTP_ADDR")
-            .unwrap_or_else(|| "0.0.0.0:8080".into())
+            .unwrap_or_else(|| DEFAULT_HTTP_ADDR.into())
             .parse()
             .map_err(|e| Error::Config(format!("DURABLE_HTTP_ADDR: {e}")))?;
         let api_token = var("DURABLE_API_TOKEN");
         let mut serve = ServeOptions {
-            enable_api: api_token.is_some()
-                || matches!(
-                    var("DURABLE_ENABLE_API").as_deref(),
-                    Some("1" | "true" | "yes")
-                ),
+            enable_api: api_token.is_some() || flag("DURABLE_ENABLE_API"),
             api_token,
+            allow_insecure_api: flag("DURABLE_API_INSECURE"),
             concurrency: parse("DURABLE_CONCURRENCY")?,
             compute_threads: parse("DURABLE_COMPUTE_THREADS")?,
             ..Default::default()
@@ -116,6 +137,9 @@ where
 
 /// Serve on an already-bound listener until `shutdown` resolves. Starts the
 /// worker, `/healthz`, `/readyz` and, if enabled, the ops API under `/durable`.
+///
+/// Refuses to serve the ops API without a token on a non-loopback address
+/// unless [`ServeOptions::allow_insecure_api`] is set.
 pub async fn serve<F, S>(
     backend: Backend,
     listener: TcpListener,
@@ -127,6 +151,17 @@ where
     F: FnOnce(WorkerBuilder) -> WorkerBuilder,
     S: Future<Output = ()> + Send + 'static,
 {
+    if opts.enable_api && opts.api_token.is_none() && !opts.allow_insecure_api {
+        let addr = listener
+            .local_addr()
+            .map_err(|e| Error::Config(format!("listener address: {e}")))?;
+        if !addr.ip().is_loopback() {
+            return Err(Error::Config(format!(
+                "refusing to serve the ops API on {addr} without a token: set \
+                 DURABLE_API_TOKEN, bind to a loopback address, or set DURABLE_API_INSECURE=1"
+            )));
+        }
+    }
     let mut builder = Worker::builder(backend.clone()).drain_timeout(opts.drain_timeout);
     if let Some(n) = opts.concurrency {
         builder = builder.concurrency(n);

@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(client.clone())
         // The host app wraps this with its own auth layers.
         .nest("/durable", durable_api::router(client));
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     println!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app)
         .with_graceful_shutdown(async {

@@ -18,7 +18,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use durable_core::{
     Backend, Commit, CommitOutcome, ComputePool, Error, Event, EventKind, HookReg, Result, Run,
-    RunId, RunStatus, WaitReg,
+    RunId, RunStatus, WaitReg, saturating_add,
 };
 use futures::StreamExt;
 use serde_json::Value;
@@ -424,8 +424,7 @@ impl Exec<'_> {
                     fire_at: None,
                 } => events.push(EventKind::TimerScheduled {
                     key: key.clone(),
-                    fire_at: now
-                        + chrono::Duration::from_std(*dur).unwrap_or(chrono::Duration::MAX),
+                    fire_at: saturating_add(now, *dur),
                 }),
                 Pending::Wait {
                     key,
@@ -440,9 +439,7 @@ impl Exec<'_> {
                     kind: *kind,
                     name: name.clone(),
                     filter: filter.clone(),
-                    timeout_at: timeout.map(|d| {
-                        now + chrono::Duration::from_std(d).unwrap_or(chrono::Duration::MAX)
-                    }),
+                    timeout_at: timeout.map(|d| saturating_add(now, d)),
                 }),
                 Pending::Hook { key, token } => hooks.push(HookReg {
                     key: key.clone(),
@@ -496,11 +493,7 @@ impl Exec<'_> {
                     timeout_at,
                     ..
                 } if !closing.contains(key.as_str()) => {
-                    let timeout_at = timeout_at.or_else(|| {
-                        timeout.map(|d| {
-                            now + chrono::Duration::from_std(d).unwrap_or(chrono::Duration::MAX)
-                        })
-                    });
+                    let timeout_at = timeout_at.or_else(|| timeout.map(|d| saturating_add(now, d)));
                     Some(WaitReg {
                         key: key.clone(),
                         kind: *kind,
@@ -576,14 +569,12 @@ impl Exec<'_> {
         frontier: &[Pending],
     ) -> Result<CommitOutcome> {
         let at = self.now();
-        let grace =
-            chrono::Duration::from_std(self.env.lease_grace).unwrap_or(chrono::Duration::MAX);
         let c = self.build_commit(
             events,
             hooks,
             frontier,
             RunStatus::Running,
-            Some(at + grace),
+            Some(saturating_add(at, self.env.lease_grace)),
             at,
         );
         self.apply(c).await
@@ -718,9 +709,7 @@ impl Exec<'_> {
                     ErrorClass::RetryAfter(d) => d,
                     _ => policy.delay_after(done.attempt),
                 };
-                let retry_at = retry.then(|| {
-                    at + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX)
-                });
+                let retry_at = retry.then(|| saturating_add(at, delay));
                 EventKind::StepFailed {
                     key,
                     attempt: done.attempt,
@@ -814,7 +803,7 @@ impl Exec<'_> {
         let backoff = Duration::from_secs(10)
             .saturating_mul(2u32.saturating_pow(attempt.clamp(1, 16) as u32 - 1))
             .min(Duration::from_secs(300));
-        let retry_at = at + chrono::Duration::from_std(backoff).unwrap_or(chrono::Duration::MAX);
+        let retry_at = saturating_add(at, backoff);
         let frontier = self.core.frontier();
         let mut c = self.build_commit(
             vec![],

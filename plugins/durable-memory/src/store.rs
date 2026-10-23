@@ -28,8 +28,10 @@ struct Inner {
     /// Creation order, oldest first.
     order: Vec<RunId>,
     idempotency: HashMap<(String, String, String), RunId>,
-    hooks: HashMap<String, RunId>,
-    definitions: HashMap<String, WorkflowDefinition>,
+    /// `(namespace, token)` to the run holding it.
+    hooks: HashMap<(String, String), RunId>,
+    /// `(namespace, workflow)`.
+    definitions: HashMap<(String, String), WorkflowDefinition>,
 }
 
 #[derive(Default)]
@@ -202,6 +204,8 @@ impl Store for MemoryStore {
         if rec.run.last_seq != c.expected_seq || rec.run.status.is_terminal() {
             return Err(Error::Conflict);
         }
+        let ns = rec.run.namespace.clone();
+        let hook_key = |token: &str| (ns.clone(), token.to_string());
 
         let mut terminal = None;
         for kind in c.events {
@@ -215,8 +219,10 @@ impl Store for MemoryStore {
                     terminal = Some(RunStatus::Failed);
                 }
                 EventKind::RunCancelled { .. } => terminal = Some(RunStatus::Cancelled),
-                EventKind::HookDisposed { token, .. } if hooks.get(token) == Some(&c.run_id) => {
-                    hooks.remove(token);
+                EventKind::HookDisposed { token, .. }
+                    if hooks.get(&hook_key(token)) == Some(&c.run_id) =>
+                {
+                    hooks.remove(&hook_key(token));
                 }
                 _ => {}
             }
@@ -225,14 +231,14 @@ impl Store for MemoryStore {
 
         let mut generated = vec![];
         for h in c.hooks {
-            let holder = hooks.get(&h.token).copied();
+            let holder = hooks.get(&hook_key(&h.token)).copied();
             let conflict = holder.is_some_and(|other| {
                 other != c.run_id
                     && !matches!(runs.get(&other), Some(r) if r.run.status.is_terminal())
             });
             let rec = runs.get_mut(&c.run_id).unwrap();
             if !conflict {
-                hooks.insert(h.token.clone(), c.run_id);
+                hooks.insert(hook_key(&h.token), c.run_id);
             }
             let kind = EventKind::HookCreated {
                 key: h.key,
@@ -310,6 +316,7 @@ impl Store for MemoryStore {
 
     async fn resolve_hook(
         &self,
+        namespace: &str,
         token: &str,
         payload: Value,
         at: DateTime<Utc>,
@@ -317,7 +324,7 @@ impl Store for MemoryStore {
         let mut inner = self.inner.lock();
         let run_id = inner
             .hooks
-            .get(token)
+            .get(&(namespace.to_string(), token.to_string()))
             .copied()
             .ok_or_else(|| Error::NotFound(format!("hook {token}")))?;
         let rec =
@@ -420,15 +427,26 @@ impl Store for MemoryStore {
             .collect())
     }
 
-    async fn upsert_definitions(&self, defs: Vec<WorkflowDefinition>) -> Result<()> {
+    async fn upsert_definitions(
+        &self,
+        namespace: &str,
+        defs: Vec<WorkflowDefinition>,
+    ) -> Result<()> {
         let mut inner = self.inner.lock();
         for d in defs {
-            inner.definitions.insert(d.name.clone(), d);
+            inner
+                .definitions
+                .insert((namespace.to_string(), d.name.clone()), d);
         }
         Ok(())
     }
 
-    async fn get_definition(&self, name: &str) -> Result<Option<WorkflowDefinition>> {
-        Ok(self.inner.lock().definitions.get(name).cloned())
+    async fn get_definition(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<WorkflowDefinition>> {
+        let key = (namespace.to_string(), name.to_string());
+        Ok(self.inner.lock().definitions.get(&key).cloned())
     }
 }

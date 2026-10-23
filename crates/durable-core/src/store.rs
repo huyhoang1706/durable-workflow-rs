@@ -35,6 +35,11 @@ pub struct HookReg {
 }
 
 /// The single atomic write path for executions.
+///
+/// Run-addressed methods (`get_run`, `commit`, `deliver_signal`, ...) take a
+/// globally unique id and do not check namespaces; `durable_runtime::Client`
+/// scopes them. Hooks and definitions are keyed by name, so they carry the
+/// namespace.
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub run_id: RunId,
@@ -98,9 +103,11 @@ pub trait Store: Send + Sync + 'static {
         payload: Value,
         at: DateTime<Utc>,
     ) -> Result<Option<QueueItem>>;
-    /// `Error::NotFound` when no live run holds the token.
+    /// Hook tokens are scoped to a namespace. `Error::NotFound` when no live
+    /// run in `namespace` holds the token.
     async fn resolve_hook(
         &self,
+        namespace: &str,
         token: &str,
         payload: Value,
         at: DateTime<Utc>,
@@ -130,6 +137,16 @@ pub trait Store: Send + Sync + 'static {
         limit: usize,
     ) -> Result<Vec<QueueItem>>;
 
-    async fn upsert_definitions(&self, defs: Vec<WorkflowDefinition>) -> Result<()>;
-    async fn get_definition(&self, name: &str) -> Result<Option<WorkflowDefinition>>;
+    /// Definitions are scoped to a namespace: the same workflow name may be
+    /// configured differently in each.
+    async fn upsert_definitions(
+        &self,
+        namespace: &str,
+        defs: Vec<WorkflowDefinition>,
+    ) -> Result<()>;
+    async fn get_definition(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<WorkflowDefinition>>;
 }
