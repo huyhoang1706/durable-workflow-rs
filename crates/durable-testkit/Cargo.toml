@@ -1,0 +1,15 @@
+[package]
+name = "durable-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+durable-core.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+parking_lot.workspace = true
+uuid.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "standalone-worker"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+durable-workflow = { path = "../../crates/durable-workflow", features = ["standalone", "redis"] }
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

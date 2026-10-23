@@ -1,0 +1,5 @@
+error: unknown duration unit ` seconds` in `30 seconds`
+ --> tests/ui/step_bad_timeout_unit.rs:4:18
+  |
+4 | #[step(timeout = "30 seconds")]
+  |                  ^^^^^^^^^^^^

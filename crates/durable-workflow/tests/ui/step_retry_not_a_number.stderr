@@ -1,0 +1,5 @@
+error: expected an integer literal
+ --> tests/ui/step_retry_not_a_number.rs:4:16
+  |
+4 | #[step(retry = "three")]
+  |                ^^^^^^^

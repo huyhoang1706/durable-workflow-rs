@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "plugins/*", "examples/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+rand = "0.9"
+rand_chacha = "0.9"
+parking_lot = "0.12"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+redis = { version = "1.7", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
+
+durable-core = { path = "crates/durable-core" }
+durable-runtime = { path = "crates/durable-runtime" }
+durable-testkit = { path = "crates/durable-testkit" }
+durable-memory = { path = "plugins/durable-memory" }

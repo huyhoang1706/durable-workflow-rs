@@ -1,0 +1,5 @@
+error: methods are not supported; use a free function
+ --> tests/ui/workflow_method.rs:5:13
+  |
+5 | async fn wf(&self, ctx: WfAsyncCtx) -> Result<u32, WorkflowError> { let _ = ctx; Ok(1) }
+  |             ^

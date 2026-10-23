@@ -1,0 +1,5 @@
+error: the first argument must be the workflow context
+ --> tests/ui/workflow_no_context.rs:5:1
+  |
+5 | async fn wf() -> Result<u32, WorkflowError> { Ok(1) }
+  | ^^^^^

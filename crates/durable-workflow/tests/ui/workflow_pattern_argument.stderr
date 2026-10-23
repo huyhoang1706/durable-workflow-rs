@@ -1,0 +1,5 @@
+error: use a plain identifier pattern (e.g. `user: Signup`)
+ --> tests/ui/workflow_pattern_argument.rs:5:30
+  |
+5 | async fn wf(ctx: WfAsyncCtx, (a, b): (u32, u32)) -> Result<u32, WorkflowError> { let _ = ctx; Ok(a + b) }
+  |                              ^^^^^^

@@ -1,0 +1,5 @@
+error: methods are not supported; use a free function
+ --> tests/ui/step_method.rs:5:17
+  |
+5 | async fn charge(&self, cents: u64) -> Result<u64, StepError> { Ok(cents) }
+  |                 ^

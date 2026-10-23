@@ -1,0 +1,7 @@
+error: #[workflow] needs `name = "..."`
+ --> tests/ui/workflow_missing_name.rs:4:1
+  |
+4 | #[workflow]
+  | ^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `workflow` (in Nightly builds, run with -Z macro-backtrace for more info)

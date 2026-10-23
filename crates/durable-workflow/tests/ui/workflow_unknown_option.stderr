@@ -1,0 +1,5 @@
+error: unknown workflow option `colour`
+ --> tests/ui/workflow_unknown_option.rs:4:24
+  |
+4 | #[workflow(name = "a", colour = "red")]
+  |                        ^^^^^^

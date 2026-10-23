@@ -1,0 +1,5 @@
+error: invalid duration `soon`
+ --> tests/ui/workflow_bad_timeout.rs:4:34
+  |
+4 | #[workflow(name = "a", timeout = "soon")]
+  |                                  ^^^^^^

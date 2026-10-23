@@ -1,0 +1,52 @@
+[package]
+name = "durable-workflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Durable workflows for Rust that adapt to your infrastructure."
+
+[features]
+default = ["memory", "macros"]
+macros = ["dep:durable-macros"]
+memory = ["dep:durable-memory"]
+postgres = ["dep:durable-postgres"]
+redis = ["dep:durable-redis"]
+# `ClassifyError` impls for reqwest / sqlx errors.
+reqwest = ["durable-runtime/reqwest"]
+sqlx = ["durable-runtime/sqlx"]
+standalone = ["postgres", "dep:durable-api", "dep:axum", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
+
+[dependencies]
+durable-core.workspace = true
+durable-runtime.workspace = true
+durable-macros = { path = "../durable-macros", optional = true }
+durable-memory = { workspace = true, optional = true }
+durable-postgres = { path = "../../plugins/durable-postgres", optional = true }
+durable-redis = { path = "../../plugins/durable-redis", optional = true }
+durable-api = { path = "../durable-api", optional = true }
+axum = { version = "0.8", optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "time"], optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"], optional = true }
+
+[dev-dependencies]
+trybuild = "1"
+durable-testkit.workspace = true
+chrono.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+testcontainers-modules.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+uuid.workspace = true
+
+[[test]]
+name = "chaos"
+required-features = ["postgres", "redis"]
+
+[[test]]
+name = "standalone"
+required-features = ["standalone"]

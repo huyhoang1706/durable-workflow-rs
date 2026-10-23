@@ -1,0 +1,5 @@
+error: unknown step option `retries`
+ --> tests/ui/step_unknown_option.rs:4:8
+  |
+4 | #[step(retries = 3)]
+  |        ^^^^^^^
