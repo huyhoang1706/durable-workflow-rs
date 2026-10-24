@@ -45,7 +45,7 @@ fn texts(items: &[StreamItem<String>]) -> Vec<String> {
         .iter()
         .filter_map(|i| match &i.body {
             StreamBody::Data(s) => Some(s.clone()),
-            StreamBody::AttemptFailed => None,
+            StreamBody::AttemptStarted | StreamBody::AttemptFailed => None,
         })
         .collect()
 }
@@ -189,10 +189,11 @@ async fn a_reader_can_resume_after_a_cursor() {
     h.spawn(token_worker(&h));
     let id = h.start("tokens", json!(["a", "b", "c", "d"])).await;
     let items = read_stream(&h, id, "tokens").await;
+    // items[0] is the attempt's start marker; items[2] is "b".
     let rest: Vec<_> = h
         .client
         .stream::<String>(id, "tokens")
-        .after(items[1].cursor.clone())
+        .after(items[2].cursor.clone())
         .await
         .unwrap()
         .map(|i| i.unwrap())
@@ -233,10 +234,14 @@ async fn a_failed_attempt_is_marked_and_the_retry_streams_afresh() {
         .iter()
         .map(|i| match &i.body {
             StreamBody::Data(s) => format!("{s}@{}", i.attempt),
+            StreamBody::AttemptStarted => format!("started@{}", i.attempt),
             StreamBody::AttemptFailed => format!("failed@{}", i.attempt),
         })
         .collect();
-    assert_eq!(shape, ["x@1", "y@1", "failed@1", "z@2"]);
+    assert_eq!(
+        shape,
+        ["started@1", "x@1", "y@1", "failed@1", "started@2", "z@2"]
+    );
 }
 
 #[tokio::test]

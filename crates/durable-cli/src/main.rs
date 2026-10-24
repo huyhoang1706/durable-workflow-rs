@@ -299,6 +299,7 @@ async fn run(cli: Cli) -> Result<Option<Value>, String> {
                         "attempt": item.attempt,
                         "body": match item.body {
                             StreamBody::Data(v) => json!({"data": v}),
+                            StreamBody::AttemptStarted => json!({"attempt_started": true}),
                             StreamBody::AttemptFailed => json!({"attempt_failed": true}),
                         },
                     }));

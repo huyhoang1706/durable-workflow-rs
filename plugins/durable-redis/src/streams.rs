@@ -88,6 +88,7 @@ impl RedisStreams {
 fn encode(c: NewChunk) -> Result<[String; 4]> {
     let (kind, data) = match c.body {
         ChunkBody::Data(v) => ("data", v.to_string()),
+        ChunkBody::AttemptStarted => ("started", "null".to_string()),
         ChunkBody::AttemptFailed => ("failed", "null".to_string()),
         ChunkBody::Closed => ("closed", "null".to_string()),
     };
@@ -112,6 +113,7 @@ fn decode(id: String, fields: Vec<String>) -> Result<StreamChunk> {
         Some("data") => ChunkBody::Data(
             serde_json::from_str::<Value>(get("d").unwrap_or("null")).map_err(|_| bad("d"))?,
         ),
+        Some("started") => ChunkBody::AttemptStarted,
         Some("failed") => ChunkBody::AttemptFailed,
         Some("closed") => ChunkBody::Closed,
         _ => return Err(bad("t")),

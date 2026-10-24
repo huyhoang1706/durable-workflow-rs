@@ -156,23 +156,29 @@ pub async fn attempt_markers_round_trip(h: StreamHarness) {
             run,
             "t",
             vec![
+                NewChunk::attempt_started("gen", 1),
                 data("gen", 1, json!("x")),
                 NewChunk::attempt_failed("gen", 1),
+                NewChunk::attempt_started("gen", 2),
                 data("gen", 2, json!("y")),
             ],
         )
         .await
         .unwrap();
     let chunks = read_all(&store, run, "t").await;
-    assert_eq!(chunks.len(), 3);
-    assert_eq!(chunks[1].body, ChunkBody::AttemptFailed);
+    let shape: Vec<_> = chunks
+        .iter()
+        .map(|c| (c.step_key.as_deref(), c.attempt, c.body.clone()))
+        .collect();
     assert_eq!(
-        (chunks[1].step_key.as_deref(), chunks[1].attempt),
-        (Some("gen"), 1)
-    );
-    assert_eq!(
-        (chunks[2].step_key.as_deref(), chunks[2].attempt),
-        (Some("gen"), 2)
+        shape,
+        [
+            (Some("gen"), 1, ChunkBody::AttemptStarted),
+            (Some("gen"), 1, ChunkBody::Data(json!("x"))),
+            (Some("gen"), 1, ChunkBody::AttemptFailed),
+            (Some("gen"), 2, ChunkBody::AttemptStarted),
+            (Some("gen"), 2, ChunkBody::Data(json!("y"))),
+        ]
     );
 }
 

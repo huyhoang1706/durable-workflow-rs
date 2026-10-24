@@ -196,9 +196,11 @@ impl WatchState {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum StreamBody<T> {
     Data(T),
-    /// The attempt (see [`StreamItem::step_key`] and `attempt`) failed:
-    /// discard the chunks it wrote. A higher attempt number for the same step
-    /// key means the same, when a crash left no marker.
+    /// A step attempt started writing. Discard what you hold for the same
+    /// [`StreamItem::step_key`]: it came from an earlier try, for example an
+    /// execution that crashed and was re-run (which keeps its attempt number).
+    AttemptStarted,
+    /// The attempt failed: discard the chunks it wrote.
     AttemptFailed,
 }
 
@@ -309,6 +311,7 @@ impl<T: DeserializeOwned + Send + 'static> ReadState<T> {
                                 break;
                             }
                         },
+                        ChunkBody::AttemptStarted => StreamBody::AttemptStarted,
                         ChunkBody::AttemptFailed => StreamBody::AttemptFailed,
                         ChunkBody::Closed => {
                             self.done = true;

@@ -1,6 +1,6 @@
 -- KEYS[1] = stream, KEYS[2] = the run's set of stream names, KEYS[3] = the run's set of closed streams
 -- ARGV[1] = ttl_ms, ARGV[2] = max_len, ARGV[3] = stream name,
--- then 4 args per chunk: step key, attempt, kind (data|failed|closed), json
+-- then 4 args per chunk: step key, attempt, kind (data|started|failed|closed), json
 -- Returns the id of the last appended entry, or the string CLOSED if the stream was closed.
 local name = ARGV[3]
 if redis.call('SISMEMBER', KEYS[3], name) == 1 then

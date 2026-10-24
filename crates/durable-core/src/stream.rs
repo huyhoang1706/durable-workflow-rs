@@ -13,6 +13,10 @@ use crate::{Result, RunId};
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ChunkBody {
     Data(Value),
+    /// A step attempt started writing. Any chunks already seen for the same
+    /// step key came from an execution that crashed before reporting a
+    /// result and has been re-run, so discard them.
+    AttemptStarted,
     /// The attempt that wrote the preceding chunks failed; discard them.
     AttemptFailed,
     /// The stream is finished; further appends are rejected.
@@ -32,6 +36,13 @@ impl NewChunk {
             step_key: Some(step_key.into()),
             attempt,
             body: ChunkBody::Data(value),
+        }
+    }
+    pub fn attempt_started(step_key: impl Into<String>, attempt: u32) -> Self {
+        Self {
+            step_key: Some(step_key.into()),
+            attempt,
+            body: ChunkBody::AttemptStarted,
         }
     }
     pub fn attempt_failed(step_key: impl Into<String>, attempt: u32) -> Self {

@@ -245,6 +245,21 @@ impl StreamHub {
         }
     }
 
+    /// First write of a step attempt to `name`: tell readers it started, so
+    /// they drop what an earlier, crashed execution of the same attempt wrote.
+    /// Holds the lock while pushing, so no other writer's chunk can overtake
+    /// the marker.
+    fn begin(&self, key: &str, attempt: u32, channel: &Channel) {
+        let mut touched = self.touched.lock();
+        if touched
+            .entry((key.to_string(), attempt))
+            .or_default()
+            .insert(channel.name.clone())
+        {
+            let _ = channel.push(NewChunk::attempt_started(key, attempt), 0, None);
+        }
+    }
+
     /// Flush everything a step attempt wrote before its result is committed.
     /// On failure the attempt's streams also get an `AttemptFailed` marker,
     /// so readers discard its partial output.
@@ -314,7 +329,6 @@ pub struct StreamWriter<T> {
     channel: Option<Arc<Channel>>,
     step_key: String,
     attempt: u32,
-    name: String,
     touched: AtomicBool,
     _item: PhantomData<fn(&T)>,
 }
@@ -330,7 +344,6 @@ impl StepInfo {
             hub: self.streams.clone(),
             step_key: self.step_key.clone(),
             attempt: self.attempt,
-            name: name.to_string(),
             touched: AtomicBool::new(false),
             _item: PhantomData,
         }
@@ -355,20 +368,14 @@ impl<T: Serialize> StreamWriter<T> {
                 self.hub.limits.max_chunk_bytes
             )));
         }
+        if !self.touched.swap(true, Ordering::SeqCst) {
+            self.hub.begin(&self.step_key, self.attempt, ch);
+        }
         ch.push(
             NewChunk::data(self.step_key.clone(), self.attempt, value),
             bytes,
             Some(self.hub.limits.max_buffered_bytes),
-        )?;
-        if !self.touched.swap(true, Ordering::SeqCst) {
-            self.hub
-                .touched
-                .lock()
-                .entry((self.step_key.clone(), self.attempt))
-                .or_default()
-                .insert(self.name.clone());
-        }
-        Ok(())
+        )
     }
 
     /// Write every item of `stream` (an LLM SDK stream, say) and return them,
