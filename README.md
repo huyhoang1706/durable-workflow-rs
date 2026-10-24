@@ -32,7 +32,8 @@ async fn send_email(mailer: Dep<dyn Mailer>, to: String, subject: String) -> Res
 
 See [`examples/embedded-axum`](examples/embedded-axum) (an existing axum app that shares its sqlx
 pool and mounts the ops API) and [`examples/standalone-worker`](examples/standalone-worker) (a
-dedicated worker with a CPU-bound sync workflow).
+dedicated worker with a CPU-bound sync workflow). [`examples/llm-streaming`](examples/llm-streaming)
+streams an LLM answer to a browser while a step runs.
 
 ## Layout
 
@@ -44,12 +45,14 @@ crates/
   durable-api/        axum ops router (mountable or standalone)
   durable-cli/        the `durable` binary
   durable-testkit/    conformance suites for plugin authors, ManualClock
-  durable-workflow/   facade; features: memory (default), macros (default), postgres, redis, standalone
+  durable-workflow/   facade; features: memory (default), macros (default), postgres, redis, standalone,
+                      observable (local JSON logs + spans), otel (opt-in OpenTelemetry)
 plugins/
   durable-memory/     in-memory reference implementation (tests, dev)
   durable-postgres/   Store (sqlx), migrations
-  durable-redis/      Queue (Lua), PubSub, Cache, RateLimiter
-examples/             embedded-axum, standalone-worker
+  durable-redis/      Queue (Lua), PubSub, Cache, RateLimiter, Streams
+  durable-otel/       OpenTelemetry traces, metrics and logs (opt-in)
+examples/             embedded-axum, standalone-worker, llm-streaming
 ```
 
 Plugins depend only on `durable-core`. `durable-runtime` depends only on `durable-core`.
@@ -149,6 +152,85 @@ executions (configurable).
            rate_limit(limit = 10, period = "1s"))]        // rejects excess starts: StartOutcome::RateLimited
 ```
 
+## Streaming
+
+Two different things, on purpose:
+
+- **Run state (durable).** `client.watch(run_id).after(seq).await?` is a live, resumable feed of the
+  run's events, built on the event log: every committed event in order, exactly once, ending after
+  the terminal event. `RunUpdate::StepStarted` is an extra best-effort hint.
+- **User streams (transient).** A step writes named chunks (LLM tokens, progress) that live in the
+  `StreamStore` (Redis Streams, with a TTL, 24 h by default) and are **never** written to Postgres:
+
+```rust
+ctx.step("generate", move || async move {
+    let tokens = durable_workflow::step::current().stream::<String>("tokens");
+    let parts = tokens.forward(llm_token_stream).await?;   // or tokens.write(&chunk)? per chunk
+    Ok::<_, StepError>(parts.concat())                     // the durable answer
+}).await?;
+
+let mut feed = client.stream::<String>(run_id, "tokens").await?;   // any process
+```
+
+The step's return value is the durable answer; the chunks are a live preview of it. A client that
+renders tokens should swap in `StepSucceeded.output` (from `watch`) when it arrives. That also
+recovers a client whose stream expired, was flushed, or that connected late. Losing a stream loses
+nothing durable.
+
+How readers see retries: each attempt's first chunk is preceded by an `AttemptStarted` marker, and
+a failed attempt ends with `AttemptFailed`. **When you see either, drop what you hold for that step
+key** (a crashed worker's partial output is replaced the same way, because its re-run starts with
+a new marker). Writers are limited to steps. Writes are buffered and flushed every 25 ms
+(`WorkerBuilder::stream_flush_interval`) or 64 chunks, before the step's result is committed; a
+flush failure is logged and never fails the step. With no stream store configured, writes are
+no-ops (one warning per worker). The stream feed ends when the stream closes (the run ending
+closes all its streams) and never hangs on an expired stream of a finished run.
+
+`ctx.is_replaying()` is true while history is replayed into the workflow, so logging in a workflow
+body can skip the repeats.
+
+Over HTTP the same feeds are Server-Sent Events: `GET /v1/runs/{id}/watch`,
+`GET /v1/runs/{id}/streams` and `GET /v1/runs/{id}/streams/{name}`; the SSE `id` is the event seq or
+stream cursor, and `Last-Event-ID` (or `?after=`) resumes. From the CLI: `durable runs watch <id>`
+and `durable streams list|tail <id> [name]` (streams need `--redis-url`).
+
+## Observability
+
+The runtime emits `tracing` spans (`workflow.start`, `workflow.execute`, `step`) with
+`durable.run_id`, `durable.workflow`, `durable.step.key` and `durable.step.attempt`, and reports
+metrics to an `Observer` slot of the backend. Nothing in `durable-runtime` depends on OpenTelemetry.
+
+**Local first (feature `observable`, on in `standalone`).** With zero configuration the standalone
+worker prints one JSON line per closed span to stdout (with `time.busy` / `time.idle`) and writes
+rotating JSON logs to `./logs`; every log line carries the enclosing span fields, so logs and spans
+join on the run id. Embedded apps that own their subscriber add `observable::layers(..)` to it.
+
+| Variable | Default | |
+|---|---|---|
+| `DURABLE_TRACES` | `stdout` | `stdout`, `none` |
+| `DURABLE_LOGS` | `file` | `file`, `stdout` (pretty), `none` |
+| `DURABLE_METRICS` | `none` | local metrics are not implemented |
+| `DURABLE_LOG_DIR` | `./logs` | created if missing; an unwritable path fails startup with a clear error |
+| `DURABLE_LOG_FILE_PREFIX` | `durable` | |
+| `DURABLE_LOG_ROTATION` | `daily` | `minutely`, `hourly`, `daily`, `never` |
+| `DURABLE_LOG_MAX_FILES` | `7` | older files are pruned |
+| `DURABLE_STREAM_TTL_SECS` | `86400` | how long user streams are kept |
+
+**OpenTelemetry (opt-in feature `otel`, never on by default).** Add
+`features = ["standalone", "otel"]` and set the standard variables
+(`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`,
+`OTEL_{TRACES,METRICS,LOGS}_EXPORTER`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`). Each
+signal that has OTLP configured is exported over OTLP; every other signal keeps its local sink, and
+an explicit `DURABLE_*` choice wins. The trace context is stored on the run, so a run is **one
+trace** however many executions, workers and sleeps it spans: `workflow.start` → `workflow.execute`
+(one per execution) → `step`. Spans you create inside a step nest under it, and a `tracing` event
+in a step becomes a log record with that trace id. Metrics: `durable.runs.started|finished`,
+`durable.run.duration`, `durable.execution.duration`, `durable.step.duration|attempts`,
+`durable.schedule_to_start`, `durable.commit.duration`, `durable.engine.faults`,
+`durable.stream.chunks`, and worker gauges. `docker compose up -d otel-lgtm` starts a collector with
+Tempo, Mimir, Loki and Grafana (http://localhost:3000). Other sinks (DuckDB, ClickHouse) are
+`OtelConfig` exporters away: `span_exporter`, `log_exporter`, `metric_exporter`.
+
 ## Ops API and CLI
 
 `durable_api::router(client)` returns a plain `axum::Router`; nest it and wrap it with your own auth,
@@ -158,19 +240,22 @@ or serve it standalone behind `with_bearer_token`.
 POST /v1/workflows/{name}/runs          GET /v1/runs            GET /v1/runs/{id}[/events]
 POST /v1/runs/{id}/cancel|retry         POST /v1/runs/{id}/signals/{name}
 POST /v1/hooks/{token}   (webhook: the body is the payload)      POST /v1/events
+GET  /v1/runs/{id}/watch                                         (SSE, resume with Last-Event-ID)
+GET  /v1/runs/{id}/streams   /v1/runs/{id}/streams/{name}        (list; SSE of chunks)
 GET  /healthz  /readyz
 ```
 
 ```
 durable --database-url $DB [--redis-url $REDIS] migrate
 durable start <workflow> --input '{...}' [--idempotency-key K]
-durable runs list|get|events|cancel|retry
+durable runs list|get|events|cancel|retry      durable runs watch <run-id> [--after SEQ]
+durable streams list <run-id>      durable streams tail <run-id> [name] [--after CURSOR]
 durable signal <run-id> <name> --payload '...'      durable event send <name> --data '...'
 ```
 
 Standalone worker: `durable_workflow::standalone::run(Config::from_env()?, |w| w.register_default::<MyWorkflow>())`
 handles SIGTERM/SIGINT (drain, then hand back anything still running), health endpoints, the optional
-ops API (`DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`) and tracing. It listens on `DURABLE_HTTP_ADDR`,
+ops API (`DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`) and observability setup (see above). It listens on `DURABLE_HTTP_ADDR`,
 `127.0.0.1:17080` by default; in a container set `0.0.0.0:17080` so probes can reach it. It refuses
 to serve the ops API without a token on a non-loopback address unless `DURABLE_API_INSECURE=1` is set.
 
@@ -179,7 +264,8 @@ workflow definitions of other namespaces sharing the same database are invisible
 
 ## Writing a plugin
 
-Implement a trait from `durable-core` (`Store`, `Queue`, `PubSub`, `Cache`, `RateLimiter`) in a new
+Implement a trait from `durable-core` (`Store`, `Queue`, `PubSub`, `Cache`, `RateLimiter`,
+`StreamStore`) in a new
 crate under `plugins/`, then prove it with the shared suites:
 
 ```rust
@@ -187,6 +273,8 @@ durable_testkit::store_conformance!(async { Arc::new(MyStore::new()) as Arc<dyn 
 durable_testkit::queue_conformance!(async { Arc::new(MyQueue::new()) as Arc<dyn Queue> });
 durable_testkit::cache_conformance!(..);  durable_testkit::pubsub_conformance!(..);
 durable_testkit::rate_limiter_conformance!(..);
+// StreamStore: the factory takes the TTL to configure and returns a harness that can let time pass
+durable_testkit::stream_conformance!(|ttl| async move { StreamHarness::real_time(Arc::new(MyStreams::new(ttl))) });
 ```
 
 The suites include the lost-wake-up race (a signal delivered concurrently with a suspending commit)
@@ -201,11 +289,15 @@ docker compose up -d    # postgres:17 + redis:7 for the examples
 
 The chaos suite (`crates/durable-workflow/tests/chaos.rs`) runs on real Postgres + Redis with
 several workers in one process: killing workers mid-step, `FLUSHALL` mid-flight, concurrency limits
-across workers, throttle spacing and start-time rate limits.
+across workers, throttle spacing and start-time rate limits, and streaming steps through worker
+kills and a Redis flush.
+
+Without Docker, point the tests at running servers: `DURABLE_TEST_POSTGRES_URL`,
+`DURABLE_TEST_REDIS_URL` and (for the test that runs `FLUSHALL`) `DURABLE_TEST_REDIS_FLUSHABLE_URL`.
 
 ## Not yet implemented
 
-Child workflows, cron, debounce/batching/priority, streaming, blob offload for large payloads,
+Child workflows, cron, debounce/batching/priority, blob offload for large payloads,
 versioning/patching APIs, retention cleanup, a dashboard UI and first-party integration clients.
 
 Added after iteration 1:
@@ -228,3 +320,7 @@ Added after iteration 1:
   types in parallel in sync workflows (`join2` remains).
 - **Compile-fail tests** (`trybuild`, `crates/durable-workflow/tests/ui`) pin the `#[workflow]` /
   `#[step]` error messages.
+
+Added in iteration 2 ([plan](docs/plans/iter2.md)): streaming (above), the `Observer` slot and
+`plugins/durable-otel`, the local-first `observable` module, `trace_context` on runs (Postgres
+migration `0002`), and `ctx.is_replaying()`. Deferred work is tracked in [docs/BACKLOG.md](docs/BACKLOG.md).

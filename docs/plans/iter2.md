@@ -284,6 +284,20 @@ pub enum Metric<'a> {
 - **Manual:** `docker compose up -d`, run `examples/llm-streaming` and watch tokens arrive, reset on the injected failure and be replaced by the final answer. Run `examples/standalone-worker` with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` and check the traces, metrics and correlated logs in Grafana on :3000.
 - `./ci.sh` passes: fmt, clippy `-D warnings`, all tests.
 
+## Implementation notes (where the code differs from the plan above)
+
+- **`AttemptStarted` marker.** The plan relied on `AttemptFailed` plus "a higher attempt number is an implicit reset". A chaos test showed this is not enough: attempts are counted from `StepFailed` events, so a step re-run after a worker crash starts again as the *same* attempt number, and its tokens would be appended to the dead run's partial tokens with nothing to tell a reader. The first write of each (step, attempt) per execution is now preceded by `ChunkBody::AttemptStarted`, and readers drop what they hold for the step key on either marker.
+- **Builders are awaited.** `client.watch(id).after(seq).await?` and `client.stream::<T>(id, name).after(cursor).await?` implement `IntoFuture` and resolve to a stream (the run lookup and subscription happen first). Both report `RunError`. `watch` also ends when started after a run's terminal event.
+- **`StreamWriter::forward`** returns `Result<Vec<T>, StepError>`, because writing can fail (oversized chunk, full buffer).
+- **Writer limits.** Chunks are limited by `max_payload_bytes`; unflushed bytes per stream by 4 x that. A step that overruns the buffer gets a retryable error.
+- **Redis keys.** `{prefix}:s:{<run>}:n:{name}` (stream), `{prefix}:s:{<run>}:names` and `{prefix}:s:{<run>}:closed` (sets). The run id is a hash tag, and the `:n:` segment keeps a stream called `closed` or `names` from colliding with the bookkeeping keys.
+- **Metrics exporter.** OpenTelemetry's `MetricReader` trait is private in `opentelemetry_sdk` 0.33 (behind an experimental feature), so `OtelConfig` takes `metric_exporter(impl PushMetricExporter)` and wraps it in a periodic reader instead of `metric_reader`.
+- **OTLP protocol.** When no protocol variable is set the exporter uses gRPC (so `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` works), or HTTP/protobuf if the endpoint is on port 4318.
+- **`is_replaying`** is true for every history event except the newest: that poll is the first time the body sees the event.
+- **Explicit beats OTLP.** An explicit `DURABLE_TRACES` / `DURABLE_LOGS` / `DURABLE_METRICS` keeps that signal local even when OTLP is configured for it.
+- **No Redis in `connect()`.** The in-memory fallback now also wires `MemoryStreams`, so a single-process deployment can tail its streams.
+- **Extra metrics:** `durable.execution.replayed_events`, `durable.stream.bytes`, `durable.stream.flush.duration`, and the `durable.worker.concurrency` gauge.
+
 ## Out of scope (recorded in docs/BACKLOG.md)
 - DuckDB (local) and ClickHouse (production) observability stores.
 - A Prometheus pull endpoint.
