@@ -19,7 +19,7 @@ async fn migrate_is_idempotent_and_records_versions() {
     .iter()
     .map(|r| r.get(0))
     .collect();
-    assert_eq!(versions, [1]);
+    assert_eq!(versions, [1, 2]);
 }
 
 #[tokio::test]

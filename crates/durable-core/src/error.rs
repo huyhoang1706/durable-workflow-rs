@@ -11,6 +11,9 @@ pub enum Error {
     InvalidState(String),
     #[error("invalid configuration: {0}")]
     Config(String),
+    /// Appending to a stream that has been closed.
+    #[error("stream is closed")]
+    Closed,
     #[error("backend error: {0}")]
     Backend(String),
 }

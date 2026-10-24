@@ -198,6 +198,7 @@ impl Client {
                 deadline_at: def
                     .timeout_secs
                     .map(|s| saturating_add(now, Duration::from_secs(s))),
+                trace_context: None,
                 at: now,
             })
             .await?;

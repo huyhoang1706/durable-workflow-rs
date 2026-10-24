@@ -79,7 +79,7 @@ impl From<Error> for ApiError {
     fn from(e: Error) -> Self {
         let status = match &e {
             Error::NotFound(_) => StatusCode::NOT_FOUND,
-            Error::InvalidState(_) | Error::Conflict => StatusCode::CONFLICT,
+            Error::InvalidState(_) | Error::Conflict | Error::Closed => StatusCode::CONFLICT,
             Error::Config(_) => StatusCode::BAD_REQUEST,
             Error::Backend(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

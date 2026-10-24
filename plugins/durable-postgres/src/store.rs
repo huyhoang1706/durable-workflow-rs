@@ -66,6 +66,7 @@ impl PostgresStore {
 
 fn run_from_row(r: &PgRow) -> std::result::Result<Run, sqlx::Error> {
     let status: String = r.try_get("status")?;
+    let trace_context: Option<Value> = r.try_get("trace_context")?;
     Ok(Run {
         id: r.try_get("id")?,
         namespace: r.try_get("namespace")?,
@@ -86,6 +87,10 @@ fn run_from_row(r: &PgRow) -> std::result::Result<Run, sqlx::Error> {
         cancel_requested_at: r.try_get("cancel_requested_at")?,
         cancel_reason: r.try_get("cancel_reason")?,
         last_error: r.try_get("last_error")?,
+        trace_context: trace_context
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
         created_at: r.try_get("created_at")?,
         updated_at: r.try_get("updated_at")?,
     })
@@ -319,8 +324,9 @@ impl Store for PostgresStore {
         let mut tx = self.pool.begin().await.map_err(be)?;
         let inserted = q(format!(
             "INSERT INTO {runs} (id, namespace, workflow, idempotency_key, status, input, last_seq,
-                                 wake_at, concurrency_key, throttle_key, deadline_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'pending', $5, 1, $6, $7, $8, $9, $6, $6)
+                                 wake_at, concurrency_key, throttle_key, deadline_at, trace_context,
+                                 created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'pending', $5, 1, $6, $7, $8, $9, $10, $6, $6)
              ON CONFLICT (namespace, workflow, idempotency_key) WHERE idempotency_key IS NOT NULL
              DO NOTHING
              RETURNING *",
@@ -335,6 +341,13 @@ impl Store for PostgresStore {
         .bind(&new.concurrency_key)
         .bind(&new.throttle_key)
         .bind(new.deadline_at)
+        .bind(
+            new.trace_context
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| Error::Backend(e.to_string()))?,
+        )
         .fetch_optional(&mut *tx)
         .await
         .map_err(be)?;

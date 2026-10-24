@@ -4,7 +4,10 @@ use sqlx::PgPool;
 use crate::sql::{q, q_scalar, raw};
 
 /// Embedded migrations: `(version, sql)`. `{schema}` is substituted.
-const MIGRATIONS: &[(i32, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i32, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_trace_context.sql")),
+];
 
 fn be(e: sqlx::Error) -> Error {
     Error::Backend(e.to_string())

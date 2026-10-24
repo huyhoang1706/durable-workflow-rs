@@ -140,6 +140,7 @@ impl Store for MemoryStore {
             cancel_requested_at: None,
             cancel_reason: None,
             last_error: None,
+            trace_context: new.trace_context,
             created_at: new.at,
             updated_at: new.at,
         };
