@@ -593,15 +593,21 @@ async fn user_streams_are_listed_and_tailed_with_resume() {
         .iter()
         .filter(|m| m.event.as_deref() == Some("chunk"))
         .collect();
-    let text: Vec<_> = chunks
+    // The attempt announces itself, then its tokens follow.
+    assert_eq!(chunks[0].data["body"]["type"], "attempt_started");
+    let data: Vec<_> = chunks
+        .iter()
+        .filter(|m| m.data["body"]["type"] == "data")
+        .collect();
+    let text: Vec<_> = data
         .iter()
         .map(|m| m.data["body"]["data"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(text, ["a", "b", "c"]);
-    assert_eq!(chunks[0].data["step_key"], "gen");
-    assert_eq!(chunks[0].data["attempt"], 1);
+    assert_eq!(data[0].data["step_key"], "gen");
+    assert_eq!(data[0].data["attempt"], 1);
 
-    let cursor = chunks[0].id.clone().unwrap();
+    let cursor = data[0].id.clone().unwrap();
     let (_, rest, _) = sse_call(&e.app, &uri, Some(&cursor)).await;
     assert_eq!(rest.len(), 2);
     assert_eq!(rest[0].data["body"]["data"], "b");

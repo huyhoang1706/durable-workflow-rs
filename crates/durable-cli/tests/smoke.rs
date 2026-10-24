@@ -225,15 +225,21 @@ async fn watch_runs_and_tail_streams_from_the_command_line() {
     assert_eq!(list[0]["stream"], "tokens");
     assert_eq!(list[0]["closed"], true);
 
-    // Without a name, `tail` follows the run's only stream.
+    // Without a name, `tail` follows the run's only stream. The attempt's
+    // first line is its start marker.
     let chunks = cli.lines(&["streams", "tail", &id]);
+    assert_eq!(chunks[0]["body"]["attempt_started"], true);
     let data: Vec<_> = chunks
         .iter()
-        .map(|c| c["body"]["data"].as_str().unwrap().to_string())
+        .filter(|c| c["body"]["data"].is_string())
         .collect();
-    assert_eq!(data, ["he", "llo"]);
-    assert_eq!(chunks[0]["step_key"], "gen");
-    let cursor = chunks[0]["cursor"].as_str().unwrap();
+    let words: Vec<_> = data
+        .iter()
+        .map(|c| c["body"]["data"].as_str().unwrap())
+        .collect();
+    assert_eq!(words, ["he", "llo"]);
+    assert_eq!(data[0]["step_key"], "gen");
+    let cursor = data[0]["cursor"].as_str().unwrap();
     let rest = cli.lines(&["streams", "tail", &id, "tokens", "--after", cursor]);
     assert_eq!(rest.len(), 1);
     assert_eq!(rest[0]["body"]["data"], "llo");

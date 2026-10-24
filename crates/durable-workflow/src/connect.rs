@@ -112,23 +112,29 @@ impl BackendConfig {
         }
 
         #[cfg(feature = "memory")]
-        {
-            let mut streams =
-                durable_memory::MemoryStreams::new(std::sync::Arc::new(durable_core::SystemClock));
-            if let Some(ttl) = self.stream_ttl {
-                streams = streams.ttl(ttl);
-            }
-            return builder
-                .queue(durable_memory::MemoryQueue::new())
-                .pubsub(durable_memory::MemoryPubSub::new())
-                .cache(durable_memory::MemoryCache::new())
-                .streams(streams)
-                .build();
-        }
+        return self.with_memory_slots(builder);
         #[cfg(not(feature = "memory"))]
         Err(Error::Config(
             "no Redis URL given and the `memory` feature is off".into(),
         ))
+    }
+}
+
+impl BackendConfig {
+    /// Queue, pub/sub, cache and streams in this process.
+    #[cfg(feature = "memory")]
+    fn with_memory_slots(&self, builder: durable_core::BackendBuilder) -> Result<Backend, Error> {
+        let mut streams =
+            durable_memory::MemoryStreams::new(std::sync::Arc::new(durable_core::SystemClock));
+        if let Some(ttl) = self.stream_ttl {
+            streams = streams.ttl(ttl);
+        }
+        builder
+            .queue(durable_memory::MemoryQueue::new())
+            .pubsub(durable_memory::MemoryPubSub::new())
+            .cache(durable_memory::MemoryCache::new())
+            .streams(streams)
+            .build()
     }
 }
 
