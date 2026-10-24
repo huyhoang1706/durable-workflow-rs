@@ -8,7 +8,10 @@ use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -162,6 +165,8 @@ struct Inner {
 pub(crate) struct Core {
     pub run_id: RunId,
     pub deps: Deps,
+    /// True while the engine feeds history to the workflow.
+    replaying: AtomicBool,
     inner: Mutex<Inner>,
 }
 
@@ -173,6 +178,7 @@ impl Core {
         Arc::new(Self {
             run_id,
             deps,
+            replaying: AtomicBool::new(false),
             inner: Mutex::new(Inner {
                 occurrences: HashMap::new(),
                 cmds: HashMap::new(),
@@ -185,6 +191,14 @@ impl Core {
                 fault: None,
             }),
         })
+    }
+
+    pub fn set_replaying(&self, replaying: bool) {
+        self.replaying.store(replaying, Ordering::SeqCst);
+    }
+
+    pub fn is_replaying(&self) -> bool {
+        self.replaying.load(Ordering::SeqCst)
     }
 
     /// Key for a name chosen by workflow code. Names may not contain the

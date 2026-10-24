@@ -12,17 +12,18 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
 use durable_core::{
-    Backend, Commit, CommitOutcome, ComputePool, Error, Event, EventKind, HookReg, Result, Run,
-    RunId, RunStatus, WaitReg, saturating_add,
+    Backend, Commit, CommitOutcome, ComputePool, Error, Event, EventKind, HookReg, Metric, Result,
+    Run, RunId, RunStatus, WaitReg, saturating_add,
 };
 use futures::StreamExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::{sync::Notify, task::AbortHandle};
+use tracing::Instrument;
 
 use crate::{
     Deps, ErrorClass, StepError, WorkflowError, channels,
@@ -30,6 +31,7 @@ use crate::{
     driver::{Driver, DriverStatus},
     history,
     step::{self, StepInfo},
+    stream::{StreamHub, StreamLimits, close_run_streams},
     workflow::ErasedWorkflow,
 };
 
@@ -44,6 +46,9 @@ pub(crate) struct EngineEnv {
     pub max_payload_bytes: usize,
     /// Poked by `step::current().heartbeat()` so the lease keeper extends now.
     pub heartbeat: Arc<Notify>,
+    pub stream_limits: StreamLimits,
+    /// Set once the "no stream store" warning has been logged.
+    pub stream_warned: Arc<AtomicBool>,
 }
 
 pub(crate) enum Outcome {
@@ -69,6 +74,22 @@ struct Running {
     attempt: u32,
     cancelled: Arc<AtomicBool>,
     aborts: Vec<AbortHandle>,
+    started: Instant,
+    /// Closed (and exported) when the attempt's result is committed.
+    span: tracing::Span,
+}
+
+/// The step's name without the `#n` / `[i]` suffix that makes its key unique.
+fn step_name(key: &str) -> &str {
+    key.split(['#', '[']).next().unwrap_or(key)
+}
+
+/// Tells watchers of the run that something happened.
+pub(crate) async fn notify_run(backend: &Backend, run_id: RunId, notice: Value) {
+    let _ = backend
+        .pubsub
+        .publish(&channels::run(run_id), notice.to_string().into_bytes())
+        .await;
 }
 
 enum Wake {
@@ -84,16 +105,64 @@ pub(crate) async fn execute(
     wf: &dyn ErasedWorkflow,
     run_id: RunId,
     lost: Arc<Notify>,
+    delivery: i64,
 ) -> Result<Outcome> {
-    let store = &env.backend.store;
-    let run = store
+    let run = env
+        .backend
+        .store
         .get_run(run_id)
         .await?
         .ok_or_else(|| Error::NotFound(format!("run {run_id}")))?;
     if run.status.is_terminal() {
         return Ok(Outcome::Finished);
     }
+    // Every execution of a run continues the trace its start opened.
+    let span = tracing::info_span!(
+        "workflow.execute",
+        otel.kind = "consumer",
+        durable.run_id = %run_id,
+        durable.workflow = %run.workflow,
+        durable.namespace = %run.namespace,
+        durable.delivery = delivery,
+        durable.outcome = tracing::field::Empty,
+    );
+    if let Some(carrier) = &run.trace_context {
+        env.backend.observer.set_parent(&span, carrier);
+    }
+    let (namespace, workflow) = (run.namespace.clone(), run.workflow.clone());
+    let started = Instant::now();
+    let mut replayed = 0;
+    let result = execute_run(env, wf, run, lost, &mut replayed)
+        .instrument(span.clone())
+        .await;
+    let outcome = match &result {
+        Ok(Outcome::Finished) => "finished",
+        Ok(Outcome::Suspended { .. }) => "suspended",
+        Ok(Outcome::Fault { .. }) => "fault",
+        Ok(Outcome::Abandoned) | Err(Error::Conflict) => "abandoned",
+        Err(_) => "error",
+    };
+    span.record("durable.outcome", outcome);
+    env.backend.observer.record(&Metric::Execution {
+        namespace: &namespace,
+        workflow: &workflow,
+        outcome,
+        duration: started.elapsed(),
+        replayed_events: replayed,
+    });
+    result
+}
+
+async fn execute_run(
+    env: &EngineEnv,
+    wf: &dyn ErasedWorkflow,
+    run: Run,
+    lost: Arc<Notify>,
+    replayed: &mut usize,
+) -> Result<Outcome> {
+    let run_id = run.id;
     let events = load_history(env, &run).await?;
+    *replayed = events.len();
     let cancel_sub = env
         .backend
         .pubsub
@@ -120,12 +189,19 @@ pub(crate) async fn execute(
         lost,
         inbox_checked: false,
         published_steps: Default::default(),
+        streams: StreamHub::new(
+            &env.backend,
+            run_id,
+            env.stream_limits.clone(),
+            env.stream_warned.clone(),
+        ),
     };
     let result = exec.run_loop().await;
     exec.abort_all();
     if let Some(d) = exec.driver.as_mut() {
         d.interrupt();
     }
+    exec.streams.shutdown().await;
     if matches!(
         result,
         Ok(Outcome::Suspended { .. } | Outcome::Fault { .. })
@@ -201,6 +277,7 @@ struct Exec<'a> {
     inbox_checked: bool,
     /// Step attempts last published to the in-flight overlay.
     published_steps: std::collections::BTreeMap<String, u32>,
+    streams: Arc<StreamHub>,
 }
 
 impl Drop for Exec<'_> {
@@ -231,13 +308,19 @@ impl Exec<'_> {
         self.core = Core::new(self.run.id, self.env.deps.clone());
         let mut driver = self.wf.start(self.core.clone(), self.run.input.clone());
         self.status = DriverStatus::Pending;
-        for ev in &self.history {
+        // The poll after the newest event is live: it is the first time the
+        // body sees that event, unless an earlier execution crashed before
+        // acting on it, in which case acting twice beats never acting.
+        let last = self.history.len().saturating_sub(1);
+        for (i, ev) in self.history.iter().enumerate() {
+            self.core.set_replaying(i < last);
             self.core.feed(ev);
             self.status = driver.poll().await;
             if self.core.fault().is_some() {
                 break;
             }
         }
+        self.core.set_replaying(false);
         if self.history.is_empty() {
             self.status = driver.poll().await;
         }
@@ -527,6 +610,26 @@ impl Exec<'_> {
         c
     }
 
+    /// The store commit, traced and timed. Watchers are told about the new
+    /// events right after it succeeds.
+    async fn commit_store(&mut self, c: Commit) -> Result<CommitOutcome> {
+        let span = tracing::debug_span!(
+            "store.commit",
+            durable.run_id = %self.run.id,
+            durable.events = c.events.len(),
+        );
+        let started = Instant::now();
+        let res = self.env.backend.store.commit(c).instrument(span).await;
+        self.env.backend.observer.record(&Metric::Commit {
+            duration: started.elapsed(),
+            conflict: matches!(res, Err(Error::Conflict)),
+        });
+        if let Ok(out) = &res {
+            notify_run(&self.env.backend, self.run.id, json!({"seq": out.last_seq})).await;
+        }
+        res
+    }
+
     /// Commit, then feed everything the store appended into the live driver.
     async fn apply(&mut self, c: Commit) -> Result<CommitOutcome> {
         let at = c.at;
@@ -544,7 +647,7 @@ impl Exec<'_> {
                 }
             })
             .collect();
-        let out = self.env.backend.store.commit(c).await?;
+        let out = self.commit_store(c).await?;
         applied.extend(out.generated.iter().cloned());
         self.last_seq = out.last_seq;
         self.cancel_requested |= out.cancel_requested;
@@ -599,14 +702,37 @@ impl Exec<'_> {
         let Some(start) = self.core.take_start(key) else {
             return;
         };
+        let name = step_name(key);
+        let span = tracing::info_span!(
+            "step",
+            otel.name = %format!("step {name}"),
+            durable.run_id = %self.run.id,
+            durable.workflow = %self.run.workflow,
+            durable.step.name = name,
+            durable.step.key = key,
+            durable.step.attempt = attempt,
+            durable.step.kind = match &start {
+                StepStart::Async(_) => "async",
+                StepStart::Blocking(_) => "blocking",
+            },
+            durable.step.outcome = tracing::field::Empty,
+            durable.step.error = tracing::field::Empty,
+        );
+        // Best effort: lets watchers show the attempt as running.
+        let backend = self.env.backend.clone();
+        let run_id = self.run.id;
+        let notice = json!({"step_started": {"key": key, "attempt": attempt}});
+        tokio::spawn(async move { notify_run(&backend, run_id, notice).await });
         let cancelled = Arc::new(AtomicBool::new(false));
         let heartbeat = self.env.heartbeat.clone();
         let info = StepInfo {
+            step_key: key.to_string(),
             attempt,
             idempotency_key: format!("{}:{key}", self.run.id),
             cancelled: cancelled.clone(),
             heartbeat: Arc::new(move || heartbeat.notify_one()),
             deps: self.env.deps.clone(),
+            streams: self.streams.clone(),
         };
         let (done_tx, key_owned) = (self.done_tx.clone(), key.to_string());
         let mut aborts = vec![];
@@ -615,10 +741,9 @@ impl Exec<'_> {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<Value, StepError>>();
         match start {
             StepStart::Async(f) => {
-                let task =
-                    tokio::spawn(
-                        async move { step::scope_async(info, async move { f().await }).await },
-                    );
+                let task = tokio::spawn(
+                    step::scope_async(info, async move { f().await }).instrument(span.clone()),
+                );
                 aborts.push(task.abort_handle());
                 tokio::spawn(async move {
                     let r = match task.await {
@@ -633,7 +758,9 @@ impl Exec<'_> {
                 });
             }
             StepStart::Blocking(f) => {
+                let span = span.clone();
                 self.env.pool.execute(Box::new(move || {
+                    let _entered = span.enter();
                     let r = catch_unwind(AssertUnwindSafe(|| step::scope_blocking(info, f)))
                         .unwrap_or_else(|p| {
                             Err(StepError::retryable(format!(
@@ -672,6 +799,8 @@ impl Exec<'_> {
                 attempt,
                 cancelled,
                 aborts,
+                started: Instant::now(),
+                span,
             },
         );
     }
@@ -690,6 +819,7 @@ impl Exec<'_> {
             return Ok(());
         };
         let key = done.key;
+        let step_key = key.clone();
         let mut result = done.result;
         if let Ok(v) = &result
             && v.to_string().len() > self.env.max_payload_bytes
@@ -719,21 +849,52 @@ impl Exec<'_> {
                 }
             }
         };
+        let (outcome, failed) = match &event {
+            EventKind::StepSucceeded { .. } => ("succeeded", false),
+            EventKind::StepFailed {
+                retry_at: Some(_), ..
+            } => ("retrying", true),
+            _ => ("failed", true),
+        };
+        running.span.record("durable.step.outcome", outcome);
+        if let EventKind::StepFailed { error, .. } = &event {
+            running.span.record("durable.step.error", error.as_str());
+        }
+        self.env.backend.observer.record(&Metric::StepAttempt {
+            namespace: &self.run.namespace,
+            workflow: &self.run.workflow,
+            step: step_name(&step_key),
+            outcome,
+            duration: running.started.elapsed(),
+        });
+        // Readers must see every chunk before the step's event shows up.
+        self.streams
+            .finish_step(&step_key, done.attempt, failed)
+            .await;
+        drop(running);
         self.commit_running(vec![event], vec![], frontier).await?;
         Ok(())
     }
 
     async fn finish_commit(&mut self, kind: EventKind) -> Result<()> {
         let at = self.now();
+        let status = match &kind {
+            EventKind::RunSucceeded { .. } => RunStatus::Succeeded,
+            EventKind::RunCancelled { .. } => RunStatus::Cancelled,
+            _ => RunStatus::Failed,
+        };
         let mut c = Commit::new(self.run.id, self.last_seq, at);
         c.events = vec![kind];
-        self.env.backend.store.commit(c).await?;
-        let _ = self
-            .env
-            .backend
-            .pubsub
-            .publish(&channels::run_finished(self.run.id), b"finished".to_vec())
-            .await;
+        self.commit_store(c).await?;
+        self.env.backend.observer.record(&Metric::RunFinished {
+            namespace: &self.run.namespace,
+            workflow: &self.run.workflow,
+            status,
+            e2e: (at - self.run.created_at).to_std().unwrap_or_default(),
+        });
+        // Readers of the run's streams end once the run is over.
+        self.streams.shutdown().await;
+        close_run_streams(&self.env.backend, self.run.id).await;
         Ok(())
     }
 
@@ -787,7 +948,14 @@ impl Exec<'_> {
     /// Record the fault on the run and back off. The run stays open so a code
     /// fix resumes it.
     async fn on_fault(&mut self, msg: String) -> Result<Outcome> {
-        tracing::error!(run = %self.run.id, workflow = %self.run.workflow, "engine fault: {msg}");
+        tracing::error!(
+            run_id = %self.run.id, workflow = %self.run.workflow,
+            "engine fault: {msg}"
+        );
+        self.env.backend.observer.record(&Metric::EngineFault {
+            namespace: &self.run.namespace,
+            workflow: &self.run.workflow,
+        });
         self.abort_all();
         let at = self.now();
         let attempt = match &self.env.backend.cache {
@@ -814,7 +982,7 @@ impl Exec<'_> {
             at,
         );
         c.last_error = Some(msg);
-        self.env.backend.store.commit(c).await?;
+        self.commit_store(c).await?;
         Ok(Outcome::Fault { retry_at })
     }
 }
