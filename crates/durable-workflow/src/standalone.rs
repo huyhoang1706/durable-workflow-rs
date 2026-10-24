@@ -1,5 +1,7 @@
 //! Run a worker as its own process: signal handling, health endpoints, an
-//! optional ops API and tracing setup.
+//! optional ops API and observability setup (see [`crate::observable`]: JSON
+//! spans on stdout and rotating JSON log files by default; OTLP with the
+//! opt-in `otel` feature).
 //!
 //! ```ignore
 //! #[tokio::main]
@@ -18,7 +20,10 @@ use durable_core::{Backend, Error};
 use durable_runtime::{Client, Worker, WorkerBuilder};
 use tokio::net::TcpListener;
 
-use crate::connect::BackendConfig;
+use crate::{
+    connect::BackendConfig,
+    observable::{self, ObservableConfig},
+};
 
 /// Everything the HTTP side and the worker need beyond the backend itself.
 #[derive(Clone)]
@@ -68,6 +73,8 @@ pub struct Config {
     pub backend: BackendConfig,
     pub http_addr: SocketAddr,
     pub serve: ServeOptions,
+    /// Where spans and logs go; see [`ObservableConfig`].
+    pub observable: ObservableConfig,
 }
 
 /// Loopback only, so health and ops endpoints are not exposed by accident;
@@ -78,7 +85,8 @@ impl Config {
     /// Backend: see [`BackendConfig::from_env`]. Plus `DURABLE_HTTP_ADDR`
     /// (default [`DEFAULT_HTTP_ADDR`]), `DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`,
     /// `DURABLE_API_INSECURE`, `DURABLE_CONCURRENCY`, `DURABLE_COMPUTE_THREADS`,
-    /// `DURABLE_DRAIN_SECS`.
+    /// `DURABLE_DRAIN_SECS`, plus the observability variables of
+    /// [`ObservableConfig::from_env`] (`DURABLE_LOG_DIR`, ...).
     pub fn from_env() -> Result<Self, Error> {
         let var = |k: &str| std::env::var(k).ok();
         let flag = |k: &str| matches!(var(k).as_deref(), Some("1" | "true" | "yes"));
@@ -110,6 +118,7 @@ impl Config {
             backend: BackendConfig::from_env()?,
             http_addr,
             serve,
+            observable: ObservableConfig::from_env()?,
         })
     }
 }
@@ -119,20 +128,26 @@ pub async fn run<F>(config: Config, configure: F) -> Result<(), Error>
 where
     F: FnOnce(WorkerBuilder) -> WorkerBuilder,
 {
-    init_tracing();
-    let backend = config.backend.build().await?;
+    // Held until the worker has drained, so the last spans and logs flush.
+    let observability = observable::init(config.observable.clone())?;
+    let mut backend = config.backend.build().await?;
+    if let Some(observer) = observability.observer() {
+        backend.observer = observer;
+    }
     let listener = TcpListener::bind(config.http_addr)
         .await
         .map_err(|e| Error::Config(format!("cannot bind {}: {e}", config.http_addr)))?;
     tracing::info!(addr = %config.http_addr, namespace = %config.backend.namespace, "durable worker starting");
-    serve(
+    let result = serve(
         backend,
         listener,
         config.serve,
         configure,
         shutdown_signal(),
     )
-    .await
+    .await;
+    drop(observability);
+    result
 }
 
 /// Serve on an already-bound listener until `shutdown` resolves. Starts the
@@ -211,15 +226,6 @@ async fn readyz(client: Client) -> (axum::http::StatusCode, String) {
         Ok(_) => (axum::http::StatusCode::OK, "ready".into()),
         Err(e) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
     }
-}
-
-fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .try_init();
 }
 
 #[cfg(unix)]
