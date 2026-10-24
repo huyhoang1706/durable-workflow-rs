@@ -1,4 +1,5 @@
-//! Redis adapters: the dispatch queue (Lua), pub/sub, cache and rate limiter.
+//! Redis adapters: the dispatch queue (Lua), pub/sub, cache, rate limiter and
+//! transient user streams.
 //!
 //! Redis only holds an index and in-flight state. Postgres stays the source
 //! of truth, so a flushed Redis loses no runs: the reconciler rebuilds the
@@ -6,9 +7,11 @@
 
 mod queue;
 mod services;
+mod streams;
 
 pub use queue::RedisQueue;
 pub use services::{RedisCache, RedisPubSub, RedisRateLimiter};
+pub use streams::RedisStreams;
 
 use durable_core::Error;
 
@@ -22,6 +25,7 @@ pub struct RedisParts {
     pub pubsub: RedisPubSub,
     pub cache: RedisCache,
     pub rate_limiter: RedisRateLimiter,
+    pub streams: RedisStreams,
 }
 
 /// Connect every Redis slot with a shared key `prefix` (e.g. `"dw"`).
@@ -34,6 +38,7 @@ pub async fn connect(url: &str, prefix: &str) -> durable_core::Result<RedisParts
         queue: RedisQueue::new(conn.clone()).prefix(prefix),
         pubsub: RedisPubSub::new(conn.clone(), client).prefix(prefix),
         cache: RedisCache::new(conn.clone()).prefix(prefix),
-        rate_limiter: RedisRateLimiter::new(conn).prefix(prefix),
+        rate_limiter: RedisRateLimiter::new(conn.clone()).prefix(prefix),
+        streams: RedisStreams::new(conn).prefix(prefix),
     })
 }
