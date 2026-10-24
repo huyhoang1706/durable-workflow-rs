@@ -754,6 +754,7 @@ dependencies = [
  "durable-memory",
  "durable-runtime",
  "durable-testkit",
+ "futures",
  "http-body-util",
  "serde",
  "serde_json",
@@ -768,6 +769,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "durable-workflow",
+ "futures-util",
  "serde_json",
  "testcontainers-modules",
  "tokio",

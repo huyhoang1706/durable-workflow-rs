@@ -15,6 +15,7 @@ static GATE_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 struct Env {
     app: Router,
+    backend: durable_core::Backend,
     client: Client,
     worker: WorkerHandle,
 }
@@ -58,6 +59,21 @@ async fn env() -> Env {
             .await?;
             Ok(())
         })
+        .register_fn(
+            "streamer",
+            |ctx: WfAsyncCtx, words: Vec<String>| async move {
+                let text: String = ctx
+                    .step("gen", move || async move {
+                        let w = durable_runtime::step::current().stream::<String>("tokens");
+                        for word in &words {
+                            w.write(word)?;
+                        }
+                        Ok::<_, StepError>(words.concat())
+                    })
+                    .await?;
+                Ok(text)
+            },
+        )
         .register_fn("sleeper", |ctx: WfAsyncCtx, _: Value| async move {
             ctx.sleep("z", Duration::from_secs(3600)).await?;
             Ok(())
@@ -66,9 +82,10 @@ async fn env() -> Env {
         .unwrap()
         .spawn();
     worker.ready().await;
-    let client = Client::new(backend);
+    let client = Client::new(backend.clone());
     Env {
         app: router(client.clone()),
+        backend,
         client,
         worker,
     }
@@ -431,5 +448,192 @@ async fn bearer_auth_guards_everything_but_health() {
     );
     assert_eq!(status(req(None, "/healthz")).await, StatusCode::OK);
     drop(e.client);
+    e.worker.shutdown().await;
+}
+
+#[derive(Debug)]
+struct Sse {
+    id: Option<String>,
+    event: Option<String>,
+    data: Value,
+}
+
+/// GET an SSE route and read it to the end (the stream must end by itself).
+async fn sse_call(
+    app: &Router,
+    uri: &str,
+    last_event_id: Option<&str>,
+) -> (StatusCode, Vec<Sse>, Value) {
+    let mut req = Request::builder().method("GET").uri(uri);
+    if let Some(id) = last_event_id {
+        req = req.header("last-event-id", id);
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    let bytes = tokio::time::timeout(Duration::from_secs(10), resp.into_body().collect())
+        .await
+        .expect("the SSE stream ends")
+        .unwrap()
+        .to_bytes();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    if !content_type.starts_with("text/event-stream") {
+        let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
+        return (status, vec![], body);
+    }
+    let msgs = text
+        .split("\n\n")
+        .filter(|b| !b.trim().is_empty() && !b.trim_start().starts_with(':'))
+        .map(|block| {
+            let field = |name: &str| {
+                block
+                    .lines()
+                    .find_map(|l| l.strip_prefix(&format!("{name}:")))
+                    .map(|v| v.trim_start().to_string())
+            };
+            Sse {
+                id: field("id"),
+                event: field("event"),
+                data: field("data")
+                    .map(|d| serde_json::from_str(&d).unwrap_or(Value::String(d)))
+                    .unwrap_or(Value::Null),
+            }
+        })
+        .collect();
+    (status, msgs, Value::Null)
+}
+
+async fn start(app: &Router, workflow: &str, input: Value) -> String {
+    let (_, body) = call(
+        app,
+        "POST",
+        &format!("/v1/workflows/{workflow}/runs"),
+        Some(json!({ "input": input })),
+    )
+    .await;
+    body["run_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn watch_streams_events_as_sse_and_resumes_from_last_event_id() {
+    let e = env().await;
+    let id = start(&e.app, "echo", json!({"a": 1})).await;
+    until(&e.app, &id, |r| r["status"] == "succeeded").await;
+
+    let (status, all, _) = sse_call(&e.app, &format!("/v1/runs/{id}/watch"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let events: Vec<_> = all
+        .iter()
+        .filter(|m| m.event.as_deref() == Some("event"))
+        .collect();
+    let kinds: Vec<_> = events
+        .iter()
+        .map(|m| m.data["kind"]["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["run_started", "step_succeeded", "run_succeeded"]);
+    assert_eq!(events[0].id.as_deref(), Some("1"));
+    assert_eq!(events[2].id.as_deref(), Some("3"));
+    assert_eq!(events[1].data["type"], "event");
+
+    // A reconnecting EventSource sends the last id it saw.
+    let (_, rest, _) = sse_call(&e.app, &format!("/v1/runs/{id}/watch"), Some("2")).await;
+    let ids: Vec<_> = rest
+        .iter()
+        .filter(|m| m.event.as_deref() == Some("event"))
+        .map(|m| m.id.clone().unwrap())
+        .collect();
+    assert_eq!(ids, ["3"]);
+    // ?after= does the same for clients that cannot set headers.
+    let (_, rest, _) = sse_call(&e.app, &format!("/v1/runs/{id}/watch?after=1"), None).await;
+    assert_eq!(rest.len(), 2);
+    e.worker.shutdown().await;
+}
+
+#[tokio::test]
+async fn watch_rejects_unknown_runs_and_bad_ids() {
+    let e = env().await;
+    let (status, _, body) = sse_call(
+        &e.app,
+        &format!("/v1/runs/{}/watch", uuid::Uuid::now_v7()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, _, _) = sse_call(&e.app, "/v1/runs/nope/watch", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let id = start(&e.app, "echo", json!(1)).await;
+    let (status, _, _) = sse_call(&e.app, &format!("/v1/runs/{id}/watch"), Some("abc")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    e.worker.shutdown().await;
+}
+
+#[tokio::test]
+async fn user_streams_are_listed_and_tailed_with_resume() {
+    let e = env().await;
+    let id = start(&e.app, "streamer", json!(["a", "b", "c"])).await;
+    until(&e.app, &id, |r| r["status"] == "succeeded").await;
+
+    let (status, list) = call(&e.app, "GET", &format!("/v1/runs/{id}/streams"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["stream"], "tokens");
+    assert_eq!(list[0]["closed"], true);
+
+    let uri = format!("/v1/runs/{id}/streams/tokens");
+    let (status, all, _) = sse_call(&e.app, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let chunks: Vec<_> = all
+        .iter()
+        .filter(|m| m.event.as_deref() == Some("chunk"))
+        .collect();
+    let text: Vec<_> = chunks
+        .iter()
+        .map(|m| m.data["body"]["data"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(text, ["a", "b", "c"]);
+    assert_eq!(chunks[0].data["step_key"], "gen");
+    assert_eq!(chunks[0].data["attempt"], 1);
+
+    let cursor = chunks[0].id.clone().unwrap();
+    let (_, rest, _) = sse_call(&e.app, &uri, Some(&cursor)).await;
+    assert_eq!(rest.len(), 2);
+    assert_eq!(rest[0].data["body"]["data"], "b");
+    e.worker.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stream_that_never_existed_ends_once_the_run_is_done() {
+    let e = env().await;
+    let id = start(&e.app, "echo", json!(1)).await;
+    until(&e.app, &id, |r| r["status"] == "succeeded").await;
+    let (status, msgs, _) = sse_call(&e.app, &format!("/v1/runs/{id}/streams/nothing"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(msgs.is_empty());
+    e.worker.shutdown().await;
+}
+
+#[tokio::test]
+async fn watch_and_streams_are_scoped_to_the_namespace() {
+    let e = env().await;
+    let id = start(&e.app, "streamer", json!(["x"])).await;
+    until(&e.app, &id, |r| r["status"] == "succeeded").await;
+    let mut other = e.backend.clone();
+    other.namespace = "other".into();
+    let other_app = router(Client::new(other));
+    for uri in [
+        format!("/v1/runs/{id}/watch"),
+        format!("/v1/runs/{id}/streams"),
+        format!("/v1/runs/{id}/streams/tokens"),
+    ] {
+        let (status, _, _) = sse_call(&other_app, &uri, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+    }
     e.worker.shutdown().await;
 }
