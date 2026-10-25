@@ -84,6 +84,7 @@ impl IntoFuture for WatchBuilder {
                 succeeded: HashSet::new(),
                 failed: HashSet::new(),
                 final_pass: false,
+                checked_run: false,
             };
             Ok(stream::unfold(state, WatchState::next).boxed())
         })
@@ -101,6 +102,10 @@ struct WatchState {
     failed: HashSet<(String, u32)>,
     /// The run was terminal on the previous empty read.
     final_pass: bool,
+    /// The run's status was looked up. Only needed once: a watch resumed
+    /// past the run's end finds it terminal right away, and any later end
+    /// arrives as a terminal event.
+    checked_run: bool,
 }
 
 impl WatchState {
@@ -139,10 +144,12 @@ impl WatchState {
                     }
                     continue;
                 }
+                Ok(_) if self.checked_run && !self.final_pass => {}
                 Ok(_) => {
                     // Nothing new. A run that is already over has no more
                     // events to wait for (a watch resumed past its end), but
                     // look once more in case the end landed in between.
+                    self.checked_run = true;
                     match self.backend.store.get_run(self.id).await {
                         Ok(Some(run)) if run.status.is_terminal() => {
                             if self.final_pass {
@@ -256,6 +263,7 @@ impl<T: DeserializeOwned + Send + 'static> IntoFuture for StreamReadBuilder<T> {
                 queue: VecDeque::new(),
                 done: false,
                 final_pass: false,
+                idle: 0,
             };
             Ok(stream::unfold(state, ReadState::next).boxed())
         })
@@ -272,7 +280,14 @@ struct ReadState<T> {
     done: bool,
     /// The run was terminal on the previous empty read.
     final_pass: bool,
+    /// Empty reads since the run's status was last looked up.
+    idle: u32,
 }
+
+/// Empty reads between run status lookups while a stream is idle. The
+/// stream normally ends on its `Closed` marker; the lookup only covers a
+/// stream that expired or a store that lost it.
+const RUN_CHECK_EVERY: u32 = 10;
 
 impl<T: DeserializeOwned + Send + 'static> ReadState<T> {
     async fn next(mut self) -> Option<(Result<StreamItem<T>, RunError>, Self)> {
@@ -329,7 +344,14 @@ impl<T: DeserializeOwned + Send + 'static> ReadState<T> {
             }
             // Nothing new. If the run is over, read once more (the last
             // chunks were flushed before the terminal commit) and then stop.
-            match self.backend.store.get_run(self.id).await {
+            let check = self.final_pass || self.idle.is_multiple_of(RUN_CHECK_EVERY);
+            self.idle = self.idle.wrapping_add(1);
+            let status = if check {
+                self.backend.store.get_run(self.id).await
+            } else {
+                Ok(None)
+            };
+            match status {
                 Ok(Some(run)) if run.status.is_terminal() => {
                     if self.final_pass {
                         self.done = true;

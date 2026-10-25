@@ -180,7 +180,10 @@ nothing durable.
 How readers see retries: each attempt's first chunk is preceded by an `AttemptStarted` marker, and
 a failed attempt ends with `AttemptFailed`. **When you see either, drop what you hold for that step
 key** (a crashed worker's partial output is replaced the same way, because its re-run starts with
-a new marker). Writers are limited to steps. Writes are buffered and flushed every 25 ms
+a new marker). A stream store that caps its length (Redis keeps about `max_len` entries,
+10 000 by default) drops the oldest chunks first, markers included. A reader that starts from
+the beginning of a long stream should therefore keep only the highest `attempt` it sees for each
+step key, rather than rely on an `AttemptStarted` being there. Writers are limited to steps. Writes are buffered and flushed every 25 ms
 (`WorkerBuilder::stream_flush_interval`) or 64 chunks, before the step's result is committed; a
 flush failure is logged and never fails the step. With no stream store configured, writes are
 no-ops (one warning per worker). The stream feed ends when the stream closes (the run ending
