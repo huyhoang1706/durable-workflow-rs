@@ -95,17 +95,32 @@ impl Channel {
 
     /// Append everything buffered. Returns false when the append failed.
     async fn flush(&self) -> bool {
+        self.flush_with(None).await
+    }
+
+    /// Append everything buffered, followed by `tail` when given. The buffer
+    /// is only given up once the append returns: a flush cancelled midway (a
+    /// drain timeout, say) puts its chunks back, so a later flush retries
+    /// them. That may duplicate a batch the store did take; readers handle
+    /// a repeated chunk better than a lost `AttemptFailed`.
+    async fn flush_with(&self, tail: Option<NewChunk>) -> bool {
         let _serial = self.flush_lock.lock().await;
-        let (chunks, bytes) = {
-            let mut b = self.buf.lock();
-            (std::mem::take(&mut b.chunks), std::mem::take(&mut b.bytes))
-        };
-        if chunks.is_empty() {
+        let mut pending = Pending::take(self);
+        if let Some(tail) = tail {
+            pending.chunks.push(tail);
+        }
+        if pending.chunks.is_empty() {
             return true;
         }
-        let n = chunks.len();
+        let n = pending.chunks.len();
+        let bytes = pending.bytes;
         let started = Instant::now();
-        let result = self.store.append(self.run_id, &self.name, chunks).await;
+        let result = self
+            .store
+            .append(self.run_id, &self.name, pending.chunks.clone())
+            .await;
+        // The store answered: whatever happened, these chunks are handled.
+        pending.chunks.clear();
         let ok = result.is_ok();
         self.observer.record(&Metric::StreamFlush {
             chunks: n,
@@ -133,6 +148,51 @@ impl Channel {
             ),
         }
         ok
+    }
+
+    /// Mark the stream closed and append what is buffered plus `Closed` in
+    /// one batch, so no write can slip in between the two.
+    async fn close(&self) {
+        {
+            let mut b = self.buf.lock();
+            if b.closed {
+                return;
+            }
+            b.closed = true;
+        }
+        self.flush_with(Some(NewChunk::closed())).await;
+    }
+}
+
+/// Chunks taken out of a channel's buffer for one flush. Dropped before the
+/// store answered (the flush was cancelled), it returns them to the front
+/// of the buffer, ahead of anything written since.
+struct Pending<'a> {
+    ch: &'a Channel,
+    chunks: Vec<NewChunk>,
+    bytes: usize,
+}
+
+impl<'a> Pending<'a> {
+    fn take(ch: &'a Channel) -> Self {
+        let mut b = ch.buf.lock();
+        Self {
+            ch,
+            chunks: std::mem::take(&mut b.chunks),
+            bytes: std::mem::take(&mut b.bytes),
+        }
+    }
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        if self.chunks.is_empty() {
+            return;
+        }
+        let mut b = self.ch.buf.lock();
+        let newer = std::mem::replace(&mut b.chunks, std::mem::take(&mut self.chunks));
+        b.chunks.extend(newer);
+        b.bytes += self.bytes;
     }
 }
 
@@ -294,6 +354,20 @@ impl StreamHub {
     }
 }
 
+impl Drop for StreamHub {
+    /// An execution that ends without [`shutdown`](Self::shutdown) (an
+    /// error returned early) still stops its flushers right away; each one
+    /// flushes what is left before it exits.
+    fn drop(&mut self) {
+        for ch in self.channels.get_mut().values() {
+            ch.stop.store(true, Ordering::SeqCst);
+            ch.wake.notify_one();
+            // Cut short a flusher waiting out its interval.
+            ch.full.notify_one();
+        }
+    }
+}
+
 /// Close every stream of a finished run so readers stop waiting. Best effort.
 pub(crate) async fn close_run_streams(backend: &Backend, run_id: RunId) {
     let Some(store) = &backend.streams else {
@@ -397,28 +471,8 @@ impl<T: Serialize> StreamWriter<T> {
     /// Finish the stream now: flush and close it, so readers end without
     /// waiting for the run to finish. Optional. Later writes to it fail.
     pub async fn close(&self) {
-        let Some(ch) = &self.channel else { return };
-        if !ch.flush().await {
-            return;
-        }
-        {
-            let mut b = ch.buf.lock();
-            if b.closed {
-                return;
-            }
-            b.closed = true;
-        }
-        let _serial = ch.flush_lock.lock().await;
-        if ch
-            .store
-            .append(ch.run_id, &ch.name, vec![NewChunk::closed()])
-            .await
-            .is_ok()
-        {
-            let _ = ch
-                .pubsub
-                .publish(&channels::stream(ch.run_id, &ch.name), vec![])
-                .await;
+        if let Some(ch) = &self.channel {
+            ch.close().await;
         }
     }
 }
@@ -437,5 +491,207 @@ impl PubSub for NullPubSub {
         _: &str,
     ) -> durable_core::Result<futures::stream::BoxStream<'static, Vec<u8>>> {
         Ok(futures::stream::empty().boxed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use durable_core::{ChunkBody, StreamChunk, StreamCursor, StreamInfo};
+    use tokio::sync::watch;
+
+    use serde_json::Value;
+
+    use super::*;
+
+    /// Records every append. While the gate is shut, appends wait for it.
+    struct GatedStore {
+        batches: Mutex<Vec<Vec<NewChunk>>>,
+        open: watch::Sender<bool>,
+    }
+
+    impl GatedStore {
+        fn new(open: bool) -> Arc<Self> {
+            Arc::new(Self {
+                batches: Mutex::default(),
+                open: watch::channel(open).0,
+            })
+        }
+        fn bodies(&self) -> Vec<ChunkBody> {
+            self.batches
+                .lock()
+                .iter()
+                .flatten()
+                .map(|c| c.body.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StreamStore for GatedStore {
+        async fn append(
+            &self,
+            _: RunId,
+            _: &str,
+            chunks: Vec<NewChunk>,
+        ) -> durable_core::Result<StreamCursor> {
+            let mut open = self.open.subscribe();
+            let _ = open.wait_for(|o| *o).await;
+            self.batches.lock().push(chunks);
+            Ok(StreamCursor(String::new()))
+        }
+        async fn read(
+            &self,
+            _: RunId,
+            _: &str,
+            _: Option<&StreamCursor>,
+            _: usize,
+        ) -> durable_core::Result<Vec<StreamChunk>> {
+            Ok(vec![])
+        }
+        async fn info(&self, _: RunId, _: &str) -> durable_core::Result<Option<StreamInfo>> {
+            Ok(None)
+        }
+        async fn list(&self, _: RunId) -> durable_core::Result<Vec<StreamInfo>> {
+            Ok(vec![])
+        }
+        async fn close_all(&self, _: RunId) -> durable_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn hub(store: Arc<GatedStore>, flush_interval: Duration) -> Arc<StreamHub> {
+        Arc::new(StreamHub {
+            store: Some(store),
+            handle: Some(Handle::current()),
+            limits: StreamLimits {
+                flush_interval,
+                max_chunk_bytes: usize::MAX,
+                max_buffered_bytes: usize::MAX,
+            },
+            run_id: RunId::nil(),
+            pubsub: Arc::new(NullPubSub),
+            observer: Arc::new(durable_core::NoopObserver),
+            warned: Arc::default(),
+            channels: Mutex::default(),
+            touched: Mutex::default(),
+        })
+    }
+
+    fn info(hub: &Arc<StreamHub>) -> StepInfo {
+        StepInfo {
+            streams: hub.clone(),
+            ..crate::step::test_info("s")
+        }
+    }
+
+    fn data(s: &str) -> ChunkBody {
+        ChunkBody::Data(Value::from(s))
+    }
+
+    #[tokio::test]
+    async fn close_appends_buffered_chunks_and_closed_in_one_batch() {
+        let store = GatedStore::new(true);
+        let hub = hub(store.clone(), Duration::from_secs(60));
+        let info = info(&hub);
+        let w = info.stream::<&str>("out");
+        w.write(&"a").unwrap();
+        w.close().await;
+        let last = store.batches.lock().last().cloned().unwrap();
+        let bodies: Vec<_> = last.into_iter().map(|c| c.body).collect();
+        assert_eq!(
+            bodies,
+            [ChunkBody::AttemptStarted, data("a"), ChunkBody::Closed]
+        );
+        assert!(w.write(&"late").is_err(), "writes after close fail");
+    }
+
+    #[tokio::test]
+    async fn write_racing_close_is_either_kept_or_refused() {
+        // A flush is in flight, so close() has to wait for the flush lock.
+        let store = GatedStore::new(false);
+        let hub = hub(store.clone(), Duration::from_secs(60));
+        let info = info(&hub);
+        let w = Arc::new(info.stream::<&str>("out"));
+        w.write(&"a").unwrap();
+        let ch = w.channel.clone().unwrap();
+        let in_flight = tokio::spawn({
+            let ch = ch.clone();
+            async move { ch.flush().await }
+        });
+        tokio::task::yield_now().await;
+        w.write(&"b").unwrap();
+        let closing = tokio::spawn({
+            let w = w.clone();
+            async move { w.close().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            w.write(&"c").is_err(),
+            "a write once close() began is refused"
+        );
+        store.open.send_replace(true);
+        in_flight.await.unwrap();
+        closing.await.unwrap();
+        assert_eq!(
+            store.bodies(),
+            [
+                ChunkBody::AttemptStarted,
+                data("a"),
+                data("b"),
+                ChunkBody::Closed
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_flush_keeps_its_chunks() {
+        let store = GatedStore::new(false);
+        let hub = hub(store.clone(), Duration::from_secs(60));
+        let info = info(&hub);
+        let w = info.stream::<&str>("out");
+        w.write(&"a").unwrap();
+        w.write(&"b").unwrap();
+        // The step failed, and draining its streams hits DRAIN_TIMEOUT.
+        hub.finish_step("s", 1, true).await;
+        let ch = w.channel.clone().unwrap();
+        assert!(store.bodies().is_empty());
+        assert_eq!(
+            ch.buf.lock().chunks.len(),
+            4,
+            "chunks are back in the buffer"
+        );
+        w.write(&"c").unwrap();
+        store.open.send_replace(true);
+        assert!(ch.flush().await);
+        assert_eq!(
+            store.bodies(),
+            [
+                ChunkBody::AttemptStarted,
+                data("a"),
+                data("b"),
+                ChunkBody::AttemptFailed,
+                data("c"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_hub_flushes_without_waiting_out_the_interval() {
+        let store = GatedStore::new(true);
+        let hub = hub(store.clone(), Duration::from_secs(60));
+        let info = info(&hub);
+        info.stream::<&str>("out").write(&"a").unwrap();
+        // Let the flusher pick up the write and start waiting out the interval.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(info);
+        drop(hub);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while store.bodies().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the flusher flushed once the hub was gone");
+        assert_eq!(store.bodies(), [ChunkBody::AttemptStarted, data("a")]);
     }
 }

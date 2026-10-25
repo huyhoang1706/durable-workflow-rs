@@ -106,3 +106,14 @@ async fn a_malformed_cursor_is_rejected() {
         .unwrap_err();
     assert!(matches!(err, durable_core::Error::Config(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn a_batch_with_chunks_after_closed_is_rejected() {
+    let streams = RedisStreams::new(common::conn().await).prefix(common::unique_prefix());
+    let run = run();
+    let res = streams
+        .append(run, "t", vec![chunk(1), NewChunk::closed(), chunk(2)])
+        .await;
+    assert!(res.is_err(), "{res:?}");
+    assert!(streams.read(run, "t", None, 10).await.unwrap().is_empty());
+}
