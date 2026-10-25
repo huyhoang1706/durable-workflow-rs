@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::{Cache, Clock, Error, PubSub, Queue, RateLimiter, Result, Store, SystemClock};
+use crate::{
+    Cache, Clock, Error, NoopObserver, Observer, PubSub, Queue, RateLimiter, Result, Store,
+    StreamStore, SystemClock,
+};
 
 /// Bundles the pluggable infrastructure slots
 #[derive(Clone)]
@@ -12,6 +15,9 @@ pub struct Backend {
     pub cache: Option<Arc<dyn Cache>>,
     pub rate_limiter: Option<Arc<dyn RateLimiter>>,
     pub clock: Arc<dyn Clock>,
+    /// Transient user streams; steps' stream writes are no-ops without it.
+    pub streams: Option<Arc<dyn StreamStore>>,
+    pub observer: Arc<dyn Observer>,
 }
 
 impl Backend {
@@ -29,6 +35,8 @@ pub struct BackendBuilder {
     cache: Option<Arc<dyn Cache>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
     clock: Option<Arc<dyn Clock>>,
+    streams: Option<Arc<dyn StreamStore>>,
+    observer: Option<Arc<dyn Observer>>,
 }
 
 impl BackendBuilder {
@@ -68,6 +76,22 @@ impl BackendBuilder {
         self
     }
 
+    #[inline]
+    pub fn streams(mut self, v: impl StreamStore) -> Self {
+        self.streams = Some(Arc::new(v));
+        self
+    }
+    #[inline]
+    pub fn streams_arc(mut self, v: Option<Arc<dyn StreamStore>>) -> Self {
+        self.streams = v;
+        self
+    }
+    #[inline]
+    pub fn observer(mut self, v: Arc<dyn Observer>) -> Self {
+        self.observer = Some(v);
+        self
+    }
+
     pub fn build(self) -> Result<Backend> {
         let missing = |what: &str| Error::Config(format!("backend is missing a {what}"));
         Ok(Backend {
@@ -78,6 +102,8 @@ impl BackendBuilder {
             cache: self.cache,
             rate_limiter: self.rate_limiter,
             clock: self.clock.unwrap_or_else(|| Arc::new(SystemClock)),
+            streams: self.streams,
+            observer: self.observer.unwrap_or_else(|| Arc::new(NoopObserver)),
         })
     }
 }

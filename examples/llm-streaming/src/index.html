@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>durable streaming</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+  textarea { width: 100%; box-sizing: border-box; }
+  #out { white-space: pre-wrap; border: 1px solid #8884; border-radius: 6px; padding: .75rem; min-height: 6rem; margin-top: 1rem; }
+  #log { color: #888; font-size: 13px; margin-top: .5rem; }
+  .live { opacity: .75 }
+</style>
+<h1>Durable streaming</h1>
+<p>Tokens stream from Redis while the step runs. When the step commits, the page swaps in its durable output.</p>
+<textarea id="prompt" rows="3">Explain durable execution in two sentences.</textarea>
+<button id="go">Ask</button>
+<div id="out"></div>
+<div id="log"></div>
+<script>
+const out = document.getElementById('out'), log = document.getElementById('log');
+const note = (m) => log.textContent += m + '\n';
+
+document.getElementById('go').onclick = async () => {
+  out.textContent = ''; out.className = 'live'; log.textContent = '';
+  const res = await fetch('/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: document.getElementById('prompt').value }),
+  });
+  const { run_id } = await res.json();
+  note('run ' + run_id);
+  const base = `/durable/v1/runs/${run_id}`;
+
+  // Transient tokens: render them live, and start over when an attempt restarts or fails.
+  const tokens = new EventSource(`${base}/streams/tokens`);
+  tokens.addEventListener('chunk', (e) => {
+    const item = JSON.parse(e.data);
+    if (item.body.type === 'data') out.textContent += item.body.data;
+    else { out.textContent = ''; note(`${item.body.type} (attempt ${item.attempt})`); }
+  });
+
+  // Durable run state: the step's output is the truth. It replaces the partial text,
+  // which also recovers a page whose stream expired.
+  const watch = new EventSource(`${base}/watch`);
+  const finish = () => { tokens.close(); watch.close(); out.className = ''; };
+  watch.addEventListener('event', (e) => {
+    const { kind } = JSON.parse(e.data);
+    if (kind.type === 'step_succeeded' && kind.key === 'generate') out.textContent = kind.output;
+    if (kind.type === 'step_failed') note(`step failed: ${kind.error}${kind.retry_at ? ' (will retry)' : ''}`);
+    if (['run_succeeded', 'run_failed', 'run_cancelled'].includes(kind.type)) { note(kind.type); finish(); }
+  });
+};
+</script>

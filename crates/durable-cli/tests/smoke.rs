@@ -32,6 +32,22 @@ impl Cli {
         cmd.args(args).output().expect("run durable")
     }
 
+    /// Output of a streaming command: one JSON object per line.
+    fn lines(&self, args: &[&str]) -> Vec<Value> {
+        let out = self.run(args);
+        assert!(
+            out.status.success(),
+            "`durable {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON ({e}): {l}")))
+            .collect()
+    }
+
     fn ok(&self, args: &[&str]) -> Value {
         let out = self.run(args);
         assert!(
@@ -49,7 +65,20 @@ impl Cli {
     }
 }
 
-async fn setup() -> (Cli, impl Sized) {
+/// `DURABLE_TEST_POSTGRES_URL` and `DURABLE_TEST_REDIS_URL` use servers that
+/// are already running instead of starting containers.
+async fn setup() -> (Cli, Box<dyn std::any::Any>) {
+    if let (Ok(pg), Ok(redis)) = (
+        std::env::var("DURABLE_TEST_POSTGRES_URL"),
+        std::env::var("DURABLE_TEST_REDIS_URL"),
+    ) {
+        let cli = Cli {
+            database_url: pg,
+            redis_url: Some(redis),
+            schema: format!("cli_{}", uuid::Uuid::now_v7().simple()),
+        };
+        return (cli, Box::new(()));
+    }
     let pg = Postgres::default()
         .with_tag("17")
         .start()
@@ -69,7 +98,7 @@ async fn setup() -> (Cli, impl Sized) {
         redis_url: Some(format!("redis://127.0.0.1:{rport}")),
         schema: "durable_cli".into(),
     };
-    (cli, (pg, redis))
+    (cli, Box::new((pg, redis)))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -144,4 +173,85 @@ async fn operate_runs_from_the_command_line() {
             .to_lowercase()
             .contains("json")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_runs_and_tail_streams_from_the_command_line() {
+    use durable_workflow::{StepError, WfAsyncCtx, Worker, connect::BackendConfig, step};
+
+    let (cli, _containers) = setup().await;
+    cli.ok(&["migrate"]);
+
+    let mut config = BackendConfig::new(cli.database_url.clone());
+    config.redis_url = cli.redis_url.clone();
+    config.namespace = "cli".into();
+    config.schema = cli.schema.clone();
+    let backend = config.build().await.unwrap();
+    let worker = Worker::builder(backend)
+        .poll_interval(std::time::Duration::from_millis(50))
+        .register_fn("tokens", |ctx: WfAsyncCtx, words: Vec<String>| async move {
+            let text: String = ctx
+                .step("gen", move || async move {
+                    let w = step::current().stream::<String>("tokens");
+                    for word in &words {
+                        w.write(word)?;
+                    }
+                    Ok::<_, StepError>(words.concat())
+                })
+                .await?;
+            Ok(text)
+        })
+        .build()
+        .unwrap()
+        .spawn();
+    worker.ready().await;
+
+    let started = cli.ok(&["start", "tokens", "--input", r#"["he", "llo"]"#]);
+    let id = started["run_id"].as_str().unwrap().to_string();
+
+    // `watch` ends by itself once the run is terminal.
+    let updates = cli.lines(&["runs", "watch", &id]);
+    let kinds: Vec<_> = updates
+        .iter()
+        .filter(|u| u["type"] == "event")
+        .map(|u| u["kind"]["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["run_started", "step_succeeded", "run_succeeded"]);
+    let resumed = cli.lines(&["runs", "watch", &id, "--after", "2"]);
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0]["kind"]["type"], "run_succeeded");
+
+    let list = cli.ok(&["streams", "list", &id]);
+    assert_eq!(list[0]["stream"], "tokens");
+    assert_eq!(list[0]["closed"], true);
+
+    // Without a name, `tail` follows the run's only stream. The attempt's
+    // first line is its start marker.
+    let chunks = cli.lines(&["streams", "tail", &id]);
+    assert_eq!(chunks[0]["body"]["attempt_started"], true);
+    let data: Vec<_> = chunks
+        .iter()
+        .filter(|c| c["body"]["data"].is_string())
+        .collect();
+    let words: Vec<_> = data
+        .iter()
+        .map(|c| c["body"]["data"].as_str().unwrap())
+        .collect();
+    assert_eq!(words, ["he", "llo"]);
+    assert_eq!(data[0]["step_key"], "gen");
+    let cursor = data[0]["cursor"].as_str().unwrap();
+    let rest = cli.lines(&["streams", "tail", &id, "tokens", "--after", cursor]);
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0]["body"]["data"], "llo");
+
+    // Streams live in Redis, so the commands refuse to run without it.
+    let no_redis = Cli {
+        database_url: cli.database_url.clone(),
+        redis_url: None,
+        schema: cli.schema.clone(),
+    };
+    let out = no_redis.run(&["streams", "list", &id]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--redis-url"));
+    worker.shutdown().await;
 }

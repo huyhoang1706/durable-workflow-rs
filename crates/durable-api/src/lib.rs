@@ -9,23 +9,30 @@
 //! |---|---|
 //! | `POST /v1/workflows/{name}/runs` | start (`{input, idempotency_key?}`) |
 //! | `GET /v1/runs`, `/v1/runs/{id}`, `/v1/runs/{id}/events` | inspect (a running run also carries `in_flight`: worker, deliveries, step attempts) |
+//! | `GET /v1/runs/{id}/watch` | SSE of the run's events (`id` = event seq, resume with `Last-Event-ID` or `?after=`); ends after the terminal event |
+//! | `GET /v1/runs/{id}/streams` | the run's user streams (name, length, closed) |
+//! | `GET /v1/runs/{id}/streams/{name}` | SSE of a user stream's chunks (`id` = cursor, resume with `Last-Event-ID` or `?after=`); transient, ends when the stream closes |
 //! | `POST /v1/runs/{id}/cancel` `/retry` `/signals/{name}` | control |
 //! | `POST /v1/hooks/{token}` | webhook: the body is the payload |
 //! | `POST /v1/events` | `{name, data}` |
 //! | `GET /healthz`, `/readyz` | probes |
 
-use std::str::FromStr;
+use std::{convert::Infallible, str::FromStr};
 
 use axum::{
     Json, Router,
     extract::{Path, Query, Request, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event as SseEvent, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
-use durable_core::{Error, RunFilter, RunId, RunStatus};
-use durable_runtime::{Client, StartOptions, StartOutcome};
+use durable_core::{Error, RunFilter, RunId, RunStatus, StreamCursor};
+use durable_runtime::{Client, RunError, RunUpdate, StartOptions, StartOutcome};
+use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -37,6 +44,9 @@ pub fn router(client: Client) -> Router {
         .route("/v1/runs", get(list_runs))
         .route("/v1/runs/{id}", get(get_run))
         .route("/v1/runs/{id}/events", get(get_events))
+        .route("/v1/runs/{id}/watch", get(watch_run))
+        .route("/v1/runs/{id}/streams", get(list_streams))
+        .route("/v1/runs/{id}/streams/{name}", get(tail_stream))
         .route("/v1/runs/{id}/cancel", post(cancel_run))
         .route("/v1/runs/{id}/retry", post(retry_run))
         .route("/v1/runs/{id}/signals/{name}", post(signal_run))
@@ -79,11 +89,21 @@ impl From<Error> for ApiError {
     fn from(e: Error) -> Self {
         let status = match &e {
             Error::NotFound(_) => StatusCode::NOT_FOUND,
-            Error::InvalidState(_) | Error::Conflict => StatusCode::CONFLICT,
+            Error::InvalidState(_) | Error::Conflict | Error::Closed => StatusCode::CONFLICT,
             Error::Config(_) => StatusCode::BAD_REQUEST,
             Error::Backend(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self(status, e.to_string())
+    }
+}
+
+impl From<RunError> for ApiError {
+    fn from(e: RunError) -> Self {
+        match e {
+            RunError::NotFound => Self(StatusCode::NOT_FOUND, "run not found".into()),
+            RunError::Backend(e) => e.into(),
+            other => Self(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        }
     }
 }
 
@@ -257,4 +277,92 @@ async fn publish_event(
 ) -> ApiResult<Json<Value>> {
     let matched = c.send_event(&e.name, e.data).await?;
     Ok(Json(json!({"matched": matched})))
+}
+
+#[derive(Deserialize, Default)]
+struct ResumeQuery {
+    after: Option<String>,
+}
+
+/// The resume point: `Last-Event-ID` (what an `EventSource` sends on
+/// reconnect) or, for clients that cannot set headers, `?after=`.
+fn resume_point(headers: &HeaderMap, q: &ResumeQuery) -> Option<String> {
+    headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| q.after.clone())
+        .filter(|v| !v.is_empty())
+}
+
+/// Wrap an item stream as SSE. A failure ends the stream with an `error`
+/// event (the status line is long gone by then).
+fn sse<S>(items: S) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>>
+where
+    S: Stream<Item = Result<SseEvent, RunError>> + Send + 'static,
+{
+    let events = items.map(|item| {
+        Ok(item.unwrap_or_else(|e| {
+            SseEvent::default()
+                .event("error")
+                .data(json!({"error": e.to_string()}).to_string())
+        }))
+    });
+    Sse::new(events).keep_alive(KeepAlive::default())
+}
+
+async fn watch_run(
+    State(c): State<Client>,
+    Path(id): Path<String>,
+    Query(q): Query<ResumeQuery>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let mut watch = c.watch(run_id(&id)?);
+    if let Some(after) = resume_point(&headers, &q) {
+        let seq = after
+            .parse()
+            .map_err(|_| bad_request(format!("`{after}` is not an event seq")))?;
+        watch = watch.after(seq);
+    }
+    let updates = watch.await?;
+    let events = updates.map(|u| {
+        u.and_then(|u| {
+            let mut ev = SseEvent::default()
+                .json_data(&u)
+                .map_err(|e| RunError::Decode(e.to_string()))?;
+            ev = match &u {
+                RunUpdate::Event(e) => ev.id(e.seq.to_string()).event("event"),
+                RunUpdate::StepStarted { .. } => ev.event("step_started"),
+            };
+            Ok(ev)
+        })
+    });
+    Ok(sse(events).into_response())
+}
+
+async fn list_streams(State(c): State<Client>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(c.streams(run_id(&id)?).await?)))
+}
+
+async fn tail_stream(
+    State(c): State<Client>,
+    Path((id, name)): Path<(String, String)>,
+    Query(q): Query<ResumeQuery>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let mut read = c.stream::<Value>(run_id(&id)?, &name);
+    if let Some(after) = resume_point(&headers, &q) {
+        read = read.after(StreamCursor(after));
+    }
+    let items = read.await?;
+    let events = items.map(|i| {
+        i.and_then(|item| {
+            SseEvent::default()
+                .id(item.cursor.0.clone())
+                .event("chunk")
+                .json_data(&item)
+                .map_err(|e| RunError::Decode(e.to_string()))
+        })
+    });
+    Ok(sse(events).into_response())
 }

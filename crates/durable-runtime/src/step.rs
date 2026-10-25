@@ -9,18 +9,24 @@ use std::{
     },
 };
 
-use crate::Deps;
+use crate::{Deps, stream::StreamHub};
 
 #[derive(Clone)]
 pub struct StepInfo {
+    pub(crate) step_key: String,
     pub(crate) attempt: u32,
     pub(crate) idempotency_key: String,
     pub(crate) cancelled: Arc<AtomicBool>,
     pub(crate) heartbeat: Arc<dyn Fn() + Send + Sync>,
     pub(crate) deps: Deps,
+    pub(crate) streams: Arc<StreamHub>,
 }
 
 impl StepInfo {
+    /// The step's key in the run's history (`name`, `name#1`, `name[0]`, ...).
+    pub fn key(&self) -> &str {
+        &self.step_key
+    }
     pub fn attempt(&self) -> u32 {
         self.attempt
     }
@@ -83,11 +89,13 @@ pub(crate) fn scope_blocking<R>(info: StepInfo, f: impl FnOnce() -> R) -> R {
 #[cfg(test)]
 pub(crate) fn test_info(key: &str) -> StepInfo {
     StepInfo {
+        step_key: key.into(),
         attempt: 1,
         idempotency_key: key.into(),
         cancelled: Arc::new(AtomicBool::new(false)),
         heartbeat: Arc::new(|| {}),
         deps: Deps::default(),
+        streams: StreamHub::detached(),
     }
 }
 

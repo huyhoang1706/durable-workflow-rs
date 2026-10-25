@@ -15,7 +15,18 @@ struct Server {
 
 static SERVER: OnceCell<Server> = OnceCell::const_new();
 
+/// `DURABLE_TEST_REDIS_URL` points the tests at an existing server instead of
+/// starting a container.
+fn external_url() -> Option<&'static str> {
+    static URL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    URL.get_or_init(|| std::env::var("DURABLE_TEST_REDIS_URL").ok())
+        .as_deref()
+}
+
 pub async fn url() -> &'static str {
+    if let Some(url) = external_url() {
+        return url;
+    }
     &SERVER
         .get_or_init(|| async {
             let container = Redis::default()
@@ -35,6 +46,9 @@ pub async fn url() -> &'static str {
 
 pub fn client_blocking_url() -> String {
     // Callers must have awaited `url()` once.
+    if let Some(url) = external_url() {
+        return url.to_string();
+    }
     SERVER.get().expect("server started").url.clone()
 }
 

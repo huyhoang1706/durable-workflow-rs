@@ -32,3 +32,21 @@ async fn make_limiter() -> Arc<dyn RateLimiter> {
 durable_testkit::cache_conformance!(make_cache());
 durable_testkit::pubsub_conformance!(make_pubsub());
 durable_testkit::rate_limiter_conformance!(make_limiter());
+
+use durable_core::StreamStore;
+use durable_memory::MemoryStreams;
+use durable_testkit::{ManualClock, t0};
+
+async fn make_streams(ttl: std::time::Duration) -> durable_testkit::streams::StreamHarness {
+    let clock = ManualClock::new(t0());
+    let store: Arc<dyn StreamStore> = Arc::new(MemoryStreams::new(clock.clone()).ttl(ttl));
+    durable_testkit::streams::StreamHarness {
+        store,
+        elapse: Box::new(move |d| {
+            clock.advance(chrono::Duration::from_std(d).unwrap());
+            Box::pin(async {})
+        }),
+    }
+}
+
+durable_testkit::stream_conformance!(make_streams);

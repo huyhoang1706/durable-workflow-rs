@@ -14,7 +14,12 @@ redis = ["dep:durable-redis"]
 # `ClassifyError` impls for reqwest / sqlx errors.
 reqwest = ["durable-runtime/reqwest"]
 sqlx = ["durable-runtime/sqlx"]
-standalone = ["postgres", "dep:durable-api", "dep:axum", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
+# Local-first logging and span output (rotating JSON log files, spans on
+# stdout). No OpenTelemetry dependency.
+observable = ["dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender"]
+# OpenTelemetry export (OTLP). Opt-in: never part of `default` or `standalone`.
+otel = ["observable", "dep:durable-otel"]
+standalone = ["postgres", "observable", "dep:durable-api", "dep:axum", "dep:tokio"]
 
 [dependencies]
 durable-core.workspace = true
@@ -23,11 +28,13 @@ durable-macros = { path = "../durable-macros", optional = true }
 durable-memory = { workspace = true, optional = true }
 durable-postgres = { path = "../../plugins/durable-postgres", optional = true }
 durable-redis = { path = "../../plugins/durable-redis", optional = true }
+durable-otel = { path = "../../plugins/durable-otel", optional = true }
 durable-api = { path = "../durable-api", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "time"], optional = true }
 tracing = { workspace = true, optional = true }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"], optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "env-filter", "ansi", "registry"], optional = true }
+tracing-appender = { version = "0.2", optional = true }
 
 [dev-dependencies]
 trybuild = "1"
@@ -50,3 +57,11 @@ required-features = ["postgres", "redis"]
 [[test]]
 name = "standalone"
 required-features = ["standalone"]
+
+[[test]]
+name = "observable_local"
+required-features = ["observable"]
+
+[[test]]
+name = "observable"
+required-features = ["observable"]

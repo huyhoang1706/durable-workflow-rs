@@ -1,0 +1,33 @@
+[package]
+name = "durable-otel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenTelemetry traces, metrics and logs for durable-workflow."
+
+[features]
+# In-memory exporters, for tests of code built on this crate.
+testing = ["opentelemetry_sdk/testing"]
+
+[dependencies]
+durable-core.workspace = true
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio", "spec_unstable_metrics_views"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"] }
+opentelemetry-appender-tracing = "0.33"
+opentelemetry-semantic-conventions = "0.33"
+tracing-opentelemetry = "0.34"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33", features = ["testing", "rt-tokio"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+uuid.workspace = true
+durable-runtime.workspace = true
+durable-memory.workspace = true
+durable-testkit.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+serde_json.workspace = true
+chrono.workspace = true

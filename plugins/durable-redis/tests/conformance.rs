@@ -28,3 +28,17 @@ durable_testkit::queue_conformance!(make_queue());
 durable_testkit::cache_conformance!(make_cache());
 durable_testkit::pubsub_conformance!(make_pubsub());
 durable_testkit::rate_limiter_conformance!(make_limiter());
+
+use durable_core::StreamStore;
+use durable_redis::RedisStreams;
+use durable_testkit::streams::StreamHarness;
+
+async fn make_streams(ttl: std::time::Duration) -> StreamHarness {
+    StreamHarness::real_time(Arc::new(
+        RedisStreams::new(common::conn().await)
+            .prefix(common::unique_prefix())
+            .ttl(ttl),
+    ) as Arc<dyn StreamStore>)
+}
+
+durable_testkit::stream_conformance!(make_streams);

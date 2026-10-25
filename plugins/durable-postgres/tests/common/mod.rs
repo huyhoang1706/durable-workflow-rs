@@ -15,7 +15,18 @@ struct Server {
 
 static SERVER: OnceCell<Server> = OnceCell::const_new();
 
+/// `DURABLE_TEST_POSTGRES_URL` points the tests at an existing server instead
+/// of starting a container.
+fn external_url() -> Option<&'static str> {
+    static URL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    URL.get_or_init(|| std::env::var("DURABLE_TEST_POSTGRES_URL").ok())
+        .as_deref()
+}
+
 pub async fn url() -> &'static str {
+    if let Some(url) = external_url() {
+        return url;
+    }
     &SERVER
         .get_or_init(|| async {
             let container = Postgres::default()

@@ -450,3 +450,139 @@ async fn start_time_rate_limit_rejects_the_excess() {
     ));
     w.shutdown().await;
 }
+
+/// The expected durable output of run `n` of the `streaming` workflow.
+fn streamed_text(n: i64) -> String {
+    (0..20).map(|k| format!("{n}:{k} ")).collect()
+}
+
+/// A step that streams its tokens while it works, then the run sleeps.
+fn register_streaming(b: WorkerBuilder) -> WorkerBuilder {
+    b.register_fn("streaming", |ctx: WfAsyncCtx, n: i64| async move {
+        let text: String = ctx
+            .step("gen", move || async move {
+                let w = durable_workflow::step::current().stream::<String>("tokens");
+                let mut all = String::new();
+                for k in 0..20 {
+                    let token = format!("{n}:{k} ");
+                    w.write(&token)?;
+                    all.push_str(&token);
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                }
+                Ok::<_, StepError>(all)
+            })
+            .await?;
+        ctx.sleep("nap", Duration::from_millis(300)).await?;
+        Ok(text)
+    })
+}
+
+async fn start_streaming(client: &Client, count: i64) -> Vec<uuid::Uuid> {
+    let mut ids = vec![];
+    for n in 0..count {
+        ids.push(
+            client
+                .start_raw("streaming", json!(n), Default::default())
+                .await
+                .unwrap()
+                .handle()
+                .unwrap()
+                .id(),
+        );
+    }
+    ids
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_steps_finish_with_correct_output_despite_worker_kills() {
+    let (pg, rd) = (shared_pg().await, shared_redis().await);
+    let backend = backend(&pg.url, &rd.url).await;
+    let client = client(&backend);
+    let build = || {
+        register_streaming(worker(&backend))
+            .build()
+            .unwrap()
+            .spawn()
+    };
+    let (w1, w2, w3) = (build(), build(), build());
+    for w in [&w1, &w2, &w3] {
+        w.ready().await;
+    }
+    let ids = start_streaming(&client, 60).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    w1.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    w2.abort();
+    wait_all_finished(&client, &ids, 90).await;
+
+    for (n, id) in ids.iter().enumerate() {
+        let run = client.get_run(*id).await.unwrap().unwrap();
+        assert_eq!(
+            (run.status, run.output),
+            (RunStatus::Succeeded, Some(json!(streamed_text(n as i64)))),
+            "run {n}"
+        );
+        // A reader applies the markers: a step's chunks are dropped when a
+        // new attempt starts or fails. What is left is the durable answer,
+        // however many times a crash made the step run again.
+        let chunks = backend
+            .streams
+            .as_ref()
+            .unwrap()
+            .read(*id, "tokens", None, 10_000)
+            .await
+            .unwrap();
+        let mut text = String::new();
+        for c in &chunks {
+            match &c.body {
+                durable_workflow::core::ChunkBody::Data(v) => text.push_str(v.as_str().unwrap()),
+                durable_workflow::core::ChunkBody::AttemptStarted
+                | durable_workflow::core::ChunkBody::AttemptFailed => text.clear(),
+                durable_workflow::core::ChunkBody::Closed => {}
+            }
+        }
+        assert_eq!(text, streamed_text(n as i64), "run {n}");
+        let info = backend
+            .streams
+            .as_ref()
+            .unwrap()
+            .info(*id, "tokens")
+            .await
+            .unwrap();
+        assert!(
+            info.is_some_and(|i| i.closed),
+            "run {n}: stream closed at the end"
+        );
+    }
+    w3.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_steps_survive_a_redis_flush() {
+    let pg = shared_pg().await;
+    let rd = start_redis().await; // dedicated: FLUSHALL must not touch other tests
+    let backend = backend(&pg.url, &rd.url).await;
+    let client = client(&backend);
+    let w = register_streaming(worker(&backend))
+        .build()
+        .unwrap()
+        .spawn();
+    w.ready().await;
+    let ids = start_streaming(&client, 30).await;
+    // Wipe Redis (queue, leases, cache, streams) while steps are streaming.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let r = redis::Client::open(rd.url.as_str()).unwrap();
+    let mut conn = r.get_multiplexed_async_connection().await.unwrap();
+    let _: () = redis::cmd("FLUSHALL").query_async(&mut conn).await.unwrap();
+
+    wait_all_finished(&client, &ids, 60).await;
+    for (n, id) in ids.iter().enumerate() {
+        let run = client.get_run(*id).await.unwrap().unwrap();
+        assert_eq!(
+            (run.status, run.output),
+            (RunStatus::Succeeded, Some(json!(streamed_text(n as i64)))),
+            "the durable output does not depend on the stream: run {n}"
+        );
+    }
+    w.shutdown().await;
+}

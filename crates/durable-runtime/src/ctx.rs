@@ -195,6 +195,13 @@ impl WfAsyncCtx {
         }
     }
 
+    /// True while the engine replays history into the workflow. Log or emit
+    /// metrics only when this is false to avoid repeating them on every
+    /// execution.
+    pub fn is_replaying(&self) -> bool {
+        self.core.is_replaying()
+    }
+
     /// Timestamp of the latest event consumed. Deterministic across replays.
     pub fn now(&self) -> DateTime<Utc> {
         self.core.now()
@@ -630,6 +637,13 @@ impl WfSyncCtx {
 
     pub fn dispose_hook<T>(&self, hook: Hook<T>) -> Result<(), WorkflowError> {
         self.block(hook.dispose())
+    }
+
+    /// True while the engine replays history into the workflow. Log or emit
+    /// metrics only when this is false to avoid repeating them on every
+    /// execution.
+    pub fn is_replaying(&self) -> bool {
+        self.inner.is_replaying()
     }
 
     pub fn now(&self) -> DateTime<Utc> {

@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::TraceCarrier;
+
 pub type RunId = uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -73,6 +75,9 @@ pub struct Run {
     pub cancel_reason: Option<String>,
     /// Engine fault (panic, non-determinism, ...) that left the run stuck.
     pub last_error: Option<String>,
+    /// Trace context of the `workflow.start` span, so every execution of the
+    /// run continues one trace.
+    pub trace_context: Option<TraceCarrier>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -86,6 +91,7 @@ pub struct NewRun {
     pub concurrency_key: Option<String>,
     pub throttle_key: Option<String>,
     pub deadline_at: Option<DateTime<Utc>>,
+    pub trace_context: Option<TraceCarrier>,
     pub at: DateTime<Utc>,
 }
 

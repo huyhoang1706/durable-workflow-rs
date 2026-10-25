@@ -4,8 +4,8 @@ use std::{
 };
 
 use durable_core::{
-    Backend, ClaimLimits, Commit, ComputePool, EventKind, Lease, QueueScope, RunId, ThrottleLimit,
-    WorkflowDefinition,
+    Backend, ClaimLimits, Commit, ComputePool, EventKind, Lease, Metric, QueueScope, RunId,
+    ThrottleLimit, WorkflowDefinition,
 };
 use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
@@ -18,7 +18,8 @@ use tokio::{
 
 use crate::{
     Deps, DepsBuilder, ThreadPool, WfAsyncCtx, WfSyncCtx, WorkflowError, WorkflowOptions, channels,
-    engine::{self, EngineEnv, Outcome},
+    engine::{self, EngineEnv, Outcome, notify_run},
+    stream::{StreamLimits, close_run_streams},
     workflow::{
         AsyncAdapter, AsyncFn, AsyncWorkflow, ErasedWorkflow, SyncAdapter, SyncFn, SyncWorkflow,
     },
@@ -47,6 +48,7 @@ struct Config {
     max_payload_bytes: usize,
     drain_timeout: Duration,
     worker_id: Option<String>,
+    stream_flush_interval: Duration,
 }
 
 pub struct WorkerBuilder {
@@ -73,6 +75,7 @@ impl WorkerBuilder {
                 max_payload_bytes: 1 << 20,
                 drain_timeout: Duration::from_secs(30),
                 worker_id: None,
+                stream_flush_interval: Duration::from_millis(25),
             },
         }
     }
@@ -218,6 +221,13 @@ impl WorkerBuilder {
         self
     }
 
+    /// How often buffered stream chunks are flushed to the stream store
+    /// (default 25 ms). A burst of 64 chunks flushes sooner.
+    pub fn stream_flush_interval(mut self, d: Duration) -> Self {
+        self.cfg.stream_flush_interval = d;
+        self
+    }
+
     /// How long `shutdown()` waits for in-flight runs before handing them back.
     pub fn drain_timeout(mut self, d: Duration) -> Self {
         self.cfg.drain_timeout = d;
@@ -256,6 +266,12 @@ impl WorkerBuilder {
             inline_threshold: self.cfg.inline_retry_threshold,
             max_payload_bytes: self.cfg.max_payload_bytes,
             heartbeat: heartbeat.clone(),
+            stream_limits: StreamLimits {
+                flush_interval: self.cfg.stream_flush_interval,
+                max_chunk_bytes: self.cfg.max_payload_bytes,
+                max_buffered_bytes: 4 * self.cfg.max_payload_bytes,
+            },
+            stream_warned: Arc::default(),
         };
         let (shutdown_tx, _) = watch::channel(false);
         let (ready_tx, _) = watch::channel(false);
@@ -518,6 +534,14 @@ async fn run_one(
 ) {
     let run_id = lease.item.run_id;
     let cache = sh.backend.cache.clone();
+    if let Ok(lag) = (sh.backend.clock.now() - lease.item.due_at).to_std() {
+        sh.backend.observer.record(&Metric::ScheduleToStart {
+            namespace: &lease.item.namespace,
+            workflow: &lease.item.workflow,
+            kind: lease.item.kind,
+            lag,
+        });
+    }
     let deliveries_key = format!("dw:deliveries:{run_id}");
     let mut deliveries = 0;
     if let Some(c) = &cache {
@@ -540,7 +564,7 @@ async fn run_one(
         if exceeded {
             poison(&sh, run_id).await
         } else {
-            engine::execute(&sh.env, &*wf, run_id, lost).await
+            engine::execute(&sh.env, &*wf, run_id, lost, deliveries).await
         }
     };
     let outcome = AssertUnwindSafe(execution)
@@ -561,14 +585,14 @@ async fn run_one(
         Ok(Outcome::Abandoned) => Ok(()),
         Err(durable_core::Error::Conflict) => Ok(()),
         Err(e) => {
-            tracing::error!(run = %run_id, "execution failed: {e}");
+            tracing::error!(%run_id, "execution failed: {e}");
             queue
                 .nack(&lease, now + chrono::Duration::seconds(5), now)
                 .await
         }
     };
     if let Err(e) = acked {
-        tracing::debug!(run = %run_id, "lease already gone: {e}");
+        tracing::debug!(%run_id, "lease already gone: {e}");
     }
     if let Some(c) = &cache {
         let _ = c.delete(&deliveries_key).await;
@@ -595,7 +619,14 @@ async fn poison(sh: &Shared, run_id: RunId) -> durable_core::Result<Outcome> {
             sh.cfg.max_deliveries
         ),
     }];
-    store.commit(c).await?;
+    let out = store.commit(c).await?;
+    notify_run(
+        &sh.backend,
+        run_id,
+        serde_json::json!({"seq": out.last_seq}),
+    )
+    .await;
+    close_run_streams(&sh.backend, run_id).await;
     Ok(Outcome::Finished)
 }
 
@@ -608,6 +639,11 @@ async fn lease_keeper(sh: Arc<Shared>, mut shutdown: watch::Receiver<bool>) {
             _ = sh.env.heartbeat.notified() => {}
         }
         let leases: Vec<Lease> = sh.active.lock().values().map(|a| a.lease.clone()).collect();
+        sh.backend.observer.record(&Metric::WorkerGauges {
+            active_runs: leases.len(),
+            concurrency: sh.cfg.concurrency,
+            pool_backlog: sh.env.pool.backlog(),
+        });
         if leases.is_empty() {
             continue;
         }

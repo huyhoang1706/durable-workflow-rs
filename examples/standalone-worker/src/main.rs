@@ -11,6 +11,35 @@
 //! curl -XPOST localhost:17080/durable/v1/workflows/images.resize/runs \
 //!      -H 'content-type: application/json' -d '{"input":{"images":[1,2,3,4,5,6,7,8]}}'
 //! ```
+//!
+//! # Observability
+//!
+//! With no configuration the worker prints one JSON line per closed span
+//! (`durable.run_id`, `durable.workflow`, `durable.step.key`, outcome and
+//! `time.busy`) to stdout and writes rotating JSON logs to `./logs`. Each log
+//! line carries the same span fields, so logs and spans join on the run id.
+//!
+//! | Variable | Default | |
+//! |---|---|---|
+//! | `DURABLE_LOG_DIR` | `./logs` | created if missing; an unwritable path fails startup |
+//! | `DURABLE_LOG_FILE_PREFIX` | `durable` | |
+//! | `DURABLE_LOG_ROTATION` | `daily` | `minutely`, `hourly`, `daily`, `never` |
+//! | `DURABLE_LOG_MAX_FILES` | `7` | older files are pruned |
+//! | `DURABLE_TRACES` / `DURABLE_LOGS` / `DURABLE_METRICS` | `stdout` / `file` / `none` | pick a local sink per signal |
+//!
+//! To export traces, metrics and logs over OTLP, build with the opt-in `otel`
+//! feature (`features = ["standalone", "otel"]`, as this example does) and
+//! point it at a collector:
+//!
+//! ```text
+//! docker compose up -d otel-lgtm
+//! OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 cargo run -p standalone-worker
+//! # Grafana: http://localhost:3000 (traces in Tempo, metrics in Mimir, logs in Loki)
+//! ```
+//!
+//! A signal with OTLP configured goes there; the others keep their local sink
+//! (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` alone exports spans only, and logs
+//! stay in files). `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` apply.
 
 use durable_workflow::{
     StepError, WfSyncCtx, WorkflowError,

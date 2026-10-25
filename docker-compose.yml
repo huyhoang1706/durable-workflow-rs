@@ -6,3 +6,10 @@ services:
   redis:
     image: redis:7
     ports: ["6379:6379"]
+  # Optional: a collector, Tempo, Mimir, Loki and Grafana in one container, for
+  # the OpenTelemetry integration (build with `--features otel`):
+  #   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 cargo run -p standalone-worker
+  # then open Grafana at http://localhost:3000 (admin / admin).
+  otel-lgtm:
+    image: grafana/otel-lgtm
+    ports: ["3000:3000", "4317:4317", "4318:4318"]

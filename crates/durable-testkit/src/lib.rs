@@ -3,12 +3,14 @@
 //! ```ignore
 //! durable_testkit::store_conformance!(async { Arc::new(MyStore::new()) as Arc<dyn Store> });
 //! durable_testkit::queue_conformance!(async { Arc::new(MyQueue::new()) as Arc<dyn Queue> });
+//! durable_testkit::stream_conformance!(|ttl| async move { StreamHarness::real_time(Arc::new(MyStreams::new(ttl))) });
 //! ```
 
 mod clock;
 pub mod queue;
 pub mod services;
 pub mod store;
+pub mod streams;
 
 pub use clock::ManualClock;
 

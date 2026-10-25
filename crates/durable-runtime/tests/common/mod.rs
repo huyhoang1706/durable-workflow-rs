@@ -31,6 +31,17 @@ impl Harness {
         }
     }
 
+    /// As [`new`](Self::new), over a caller-built backend that uses `clock`.
+    pub fn with_backend(clock: Arc<ManualClock>, backend: Backend) -> Self {
+        let client = Client::new(backend.clone());
+        Self {
+            clock,
+            backend,
+            client,
+            workers: vec![],
+        }
+    }
+
     pub fn worker(&self) -> WorkerBuilder {
         Worker::builder(self.backend.clone())
             // Leases outlive any manual clock jump a test makes.

@@ -14,6 +14,8 @@ mod inflight;
 pub mod pool;
 pub mod retry;
 pub mod step;
+mod stream;
+mod watch;
 mod worker;
 mod workflow;
 
@@ -24,5 +26,7 @@ pub use error::{ClassifyError, ErrorClass, StepError, WorkflowError};
 pub use inflight::InFlight;
 pub use pool::ThreadPool;
 pub use retry::RetryPolicy;
+pub use stream::StreamWriter;
+pub use watch::{RunUpdate, StreamBody, StreamItem, StreamReadBuilder, WatchBuilder};
 pub use worker::{BuildError, Worker, WorkerBuilder, WorkerHandle};
 pub use workflow::{AsyncWorkflow, SyncWorkflow, WorkflowOptions};

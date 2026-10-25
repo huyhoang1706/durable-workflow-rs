@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use durable_core::{
-    Backend, CreateOutcome, Event, NewRun, QueueItem, RateDecision, Run, RunFilter, RunId,
+    Backend, CreateOutcome, Event, Metric, NewRun, QueueItem, RateDecision, Run, RunFilter, RunId,
     RunStatus, WorkflowDefinition, saturating_add,
 };
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tracing::Instrument;
 
 use crate::channels;
 
@@ -55,7 +56,7 @@ impl RunHandle {
         let mut sub = self
             .backend
             .pubsub
-            .subscribe(&channels::run_finished(self.id))
+            .subscribe(&channels::run(self.id))
             .await
             .ok();
         loop {
@@ -160,6 +161,24 @@ impl Client {
         input: Value,
         opts: StartOptions,
     ) -> durable_core::Result<StartOutcome> {
+        let span = tracing::info_span!(
+            "workflow.start",
+            otel.kind = "producer",
+            durable.workflow = workflow,
+            durable.namespace = %self.backend.namespace,
+            durable.run_id = tracing::field::Empty,
+        );
+        self.start_traced(workflow, input, opts)
+            .instrument(span)
+            .await
+    }
+
+    async fn start_traced(
+        &self,
+        workflow: &str,
+        input: Value,
+        opts: StartOptions,
+    ) -> durable_core::Result<StartOutcome> {
         let ns = self.backend.namespace.clone();
         let def = self
             .backend
@@ -198,15 +217,24 @@ impl Client {
                 deadline_at: def
                     .timeout_secs
                     .map(|s| saturating_add(now, Duration::from_secs(s))),
+                // Later executions continue this trace.
+                trace_context: Some(self.backend.observer.inject(&tracing::Span::current()))
+                    .filter(|c| !c.is_empty()),
                 at: now,
             })
             .await?;
+        tracing::Span::current()
+            .record("durable.run_id", tracing::field::display(created.run().id));
         let handle = RunHandle {
             id: created.run().id,
             backend: self.backend.clone(),
         };
         match created {
             CreateOutcome::Created(run) => {
+                self.backend.observer.record(&Metric::RunStarted {
+                    namespace: &run.namespace,
+                    workflow: &run.workflow,
+                });
                 self.enqueue(vec![run.queue_item(now)]).await?;
                 Ok(StartOutcome::Started(handle))
             }
@@ -257,52 +285,82 @@ impl Client {
     }
 
     pub async fn signal(&self, id: RunId, name: &str, payload: Value) -> durable_core::Result<()> {
-        self.scoped_run(id).await?;
-        let item = self
-            .backend
-            .store
-            .deliver_signal(id, name, payload, self.now())
-            .await?;
-        self.enqueue(item.into_iter().collect()).await
+        let span = tracing::info_span!(
+            "workflow.signal",
+            otel.kind = "producer",
+            durable.run_id = %id,
+            durable.signal = name,
+        );
+        async {
+            self.scoped_run(id).await?;
+            let item = self
+                .backend
+                .store
+                .deliver_signal(id, name, payload, self.now())
+                .await?;
+            self.enqueue(item.into_iter().collect()).await
+        }
+        .instrument(span)
+        .await
     }
 
     /// Webhook entry point: resolves the hook identified by `token`.
     pub async fn resume_hook(&self, token: &str, payload: Value) -> durable_core::Result<()> {
-        let item = self
-            .backend
-            .store
-            .resolve_hook(&self.backend.namespace, token, payload, self.now())
-            .await?;
-        self.enqueue(item.into_iter().collect()).await
+        let span = tracing::info_span!("workflow.resume_hook", otel.kind = "producer");
+        async {
+            let item = self
+                .backend
+                .store
+                .resolve_hook(&self.backend.namespace, token, payload, self.now())
+                .await?;
+            self.enqueue(item.into_iter().collect()).await
+        }
+        .instrument(span)
+        .await
     }
 
     /// Publish an event to every run waiting for it (matching by filter).
     pub async fn send_event(&self, name: &str, data: Value) -> durable_core::Result<usize> {
-        let items = self
-            .backend
-            .store
-            .publish_event(&self.backend.namespace, name, data, self.now())
-            .await?;
-        let n = items.len();
-        self.enqueue(items).await?;
-        Ok(n)
+        let span = tracing::info_span!(
+            "workflow.send_event",
+            otel.kind = "producer",
+            durable.event = name,
+        );
+        async {
+            let items = self
+                .backend
+                .store
+                .publish_event(&self.backend.namespace, name, data, self.now())
+                .await?;
+            let n = items.len();
+            self.enqueue(items).await?;
+            Ok(n)
+        }
+        .instrument(span)
+        .await
     }
 
     pub async fn cancel(&self, id: RunId, reason: Option<String>) -> durable_core::Result<()> {
-        self.scoped_run(id).await?;
-        let item = self
-            .backend
-            .store
-            .request_cancel(id, reason, self.now())
-            .await?;
-        self.enqueue(item.into_iter().collect()).await?;
-        // Best effort: lets a worker mid-step react immediately.
-        let _ = self
-            .backend
-            .pubsub
-            .publish(&channels::cancel(id), vec![])
-            .await;
-        Ok(())
+        let span =
+            tracing::info_span!("workflow.cancel", otel.kind = "producer", durable.run_id = %id);
+        async {
+            self.scoped_run(id).await?;
+            let item = self
+                .backend
+                .store
+                .request_cancel(id, reason, self.now())
+                .await?;
+            self.enqueue(item.into_iter().collect()).await?;
+            // Best effort: lets a worker mid-step react immediately.
+            let _ = self
+                .backend
+                .pubsub
+                .publish(&channels::cancel(id), vec![])
+                .await;
+            Ok(())
+        }
+        .instrument(span)
+        .await
     }
 
     /// Re-run a failed run from its failure point: succeeded steps stay
@@ -311,5 +369,48 @@ impl Client {
         self.scoped_run(id).await?;
         let item = self.backend.store.retry_run(id, self.now()).await?;
         self.enqueue(vec![item]).await
+    }
+
+    /// A live, resumable feed of the run's events:
+    /// `client.watch(id).after(seq).await?` yields [`RunUpdate`]s in order,
+    /// exactly once, and ends after the run's terminal event.
+    ///
+    /// Streamed chunks (see [`stream`](Self::stream)) are for rendering live;
+    /// the durable answer arrives here as `StepSucceeded { output }`. Replace
+    /// any partial text with it, which also recovers a client whose stream
+    /// expired.
+    pub fn watch(&self, id: RunId) -> crate::WatchBuilder {
+        crate::WatchBuilder {
+            backend: self.backend.clone(),
+            id,
+            after: 0,
+        }
+    }
+
+    /// Tail a user stream a step writes with `step::current().stream(name)`.
+    /// Chunks are transient (kept for the stream store's TTL); see
+    /// [`StreamItem`](crate::StreamItem) for how failed attempts show up.
+    pub fn stream<T: DeserializeOwned + Send + 'static>(
+        &self,
+        id: RunId,
+        name: &str,
+    ) -> crate::StreamReadBuilder<T> {
+        crate::StreamReadBuilder {
+            backend: self.backend.clone(),
+            id,
+            name: name.to_string(),
+            after: None,
+            _item: std::marker::PhantomData,
+        }
+    }
+
+    /// The run's user streams that have not expired. Empty when the backend
+    /// has no stream store.
+    pub async fn streams(&self, id: RunId) -> durable_core::Result<Vec<durable_core::StreamInfo>> {
+        self.scoped_run(id).await?;
+        match &self.backend.streams {
+            Some(store) => store.list(id).await,
+            None => Ok(vec![]),
+        }
     }
 }

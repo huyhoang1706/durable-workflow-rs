@@ -20,6 +20,7 @@ pub fn new_run_in(namespace: &str, workflow: &str, key: Option<&str>) -> NewRun 
         concurrency_key: None,
         throttle_key: None,
         deadline_at: None,
+        trace_context: None,
         at: t0(),
     }
 }
@@ -63,6 +64,26 @@ pub async fn create_run_is_idempotent_on_key(store: Arc<dyn Store>) {
     let d = store.create_run(new_run("wf", None)).await.unwrap();
     let e = store.create_run(new_run("wf", None)).await.unwrap();
     assert_ne!(d.run().id, e.run().id);
+}
+
+pub async fn trace_context_round_trips(store: Arc<dyn Store>) {
+    let carrier: TraceCarrier = [
+        (
+            "traceparent".to_string(),
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string(),
+        ),
+        ("tracestate".to_string(), "k=v".to_string()),
+    ]
+    .into();
+    let mut new = new_run("wf", None);
+    new.trace_context = Some(carrier.clone());
+    let created = store.create_run(new).await.unwrap();
+    assert_eq!(created.run().trace_context.as_ref(), Some(&carrier));
+    let got = store.get_run(created.run().id).await.unwrap().unwrap();
+    assert_eq!(got.trace_context, Some(carrier));
+    let plain = start(&store).await;
+    let got = store.get_run(plain.id).await.unwrap().unwrap();
+    assert_eq!(got.trace_context, None);
 }
 
 pub async fn new_run_has_started_event(store: Arc<dyn Store>) {
@@ -638,6 +659,7 @@ macro_rules! store_conformance {
                 [
                     create_run_is_idempotent_on_key,
                     new_run_has_started_event,
+                    trace_context_round_trips,
                     commit_appends_events_in_order,
                     commit_with_stale_seq_conflicts,
                     terminal_commit_sets_status_and_output,
