@@ -1,0 +1,36 @@
+# AGENTS.md
+
+## Commands
+
+```bash
+./ci.sh                                   # fmt --check, clippy -D warnings (all targets/features), full test suite
+cargo test --workspace --all-features     # tests only
+cargo test -p durable-runtime --test engine_async            # one integration test file
+cargo test -p durable-runtime --test engine_async <name>     # one test
+cargo test -p durable-workflow --test compile_fail           # trybuild UI tests for the macros (tests/ui/*.stderr)
+docker compose up -d                      # postgres:17 + redis:7 for the examples
+```
+
+Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-core`, `durable-runtime`, `durable-memory` and `durable-macros`.
+
+## Conventions
+
+- Naming favours unambiguous outcomes: `Succeeded`, not `Completed`; contexts are `WfAsyncCtx` / `WfSyncCtx`; the sync executor is `SyncDriver`.
+- Commit messages must be meaningful and follow this format:
+
+  ```
+  type(scope): short description
+
+  [detailed description if needed]
+  ```
+
+  Common types:
+  - `feat`: a new feature, e.g. `feat(api): add /chat/stream endpoint`
+  - `fix`: a bug fix, e.g. `fix(agent): handle empty input`
+  - `docs`: documentation, e.g. `docs: update README with install instructions`
+  - `test`: add or change tests, e.g. `test(agent): add test for search tool`
+  - `refactor`: restructure code without changing behavior, e.g. `refactor(config): move config to pydantic-settings`
+  - `chore`: maintenance such as dependency updates, e.g. `chore: bump ruff to v0.4.0`
+
+  Scope is optional but recommended: `agent`, `api`, `config`, `models`, `tests`, or another module name.
+- Workflow bodies must be deterministic: side effects only inside steps, and use `ctx.now()` / `ctx.random_u64()` / `ctx.uuid()` instead of system time/RNG. Engine code relies on this when matching steps by key (name plus occurrence counter; names may not contain `#`, `[` or `]`).
