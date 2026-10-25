@@ -25,8 +25,17 @@ const DEFAULT_MAX_LEN: usize = 10_000;
 /// | `{prefix}:s:{run}:closed` | set of its closed streams |
 ///
 /// Every key expires `ttl` after the run's last append. Streams are capped at
-/// roughly `max_len` entries (`MAXLEN ~`). Losing them (expiry, `FLUSHALL`)
-/// loses nothing durable.
+/// roughly `max_len` entries (`MAXLEN ~`). Trimming drops the oldest entries,
+/// markers included, so a reader starting from the beginning of a trimmed
+/// stream can see a step's chunks without the `AttemptStarted` before them;
+/// see the README for how to cope. Losing them (expiry, `FLUSHALL`) loses
+/// nothing durable.
+///
+/// `close_all` builds the keys of the run's streams inside its script, from
+/// the names set, instead of passing them as `KEYS`. All of them share the
+/// run's hash tag, so this works on Redis Cluster, but it relies on that:
+/// a proxy that routes scripts strictly by their declared keys is not
+/// supported.
 pub struct RedisStreams {
     conn: ConnectionManager,
     prefix: String,

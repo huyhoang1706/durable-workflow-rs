@@ -1,6 +1,8 @@
 -- KEYS[1] = the run's set of stream names, KEYS[2] = the run's set of closed streams
 -- ARGV[1] = ttl_ms, ARGV[2] = max_len, ARGV[3] = prefix of the run's stream keys
--- Appends a closed marker to every open stream (all keys share the run's hash tag).
+-- Appends a closed marker to every open stream. The stream keys are built here
+-- rather than passed in KEYS; that is safe only because they all share the run's
+-- hash tag (and so its cluster slot) with KEYS[1] and KEYS[2].
 local names = redis.call('SMEMBERS', KEYS[1])
 for _, name in ipairs(names) do
   if redis.call('SISMEMBER', KEYS[2], name) == 0 then

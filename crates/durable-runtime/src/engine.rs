@@ -81,15 +81,18 @@ struct Running {
 
 /// The step's name without the `#n` / `[i]` suffix that makes its key unique.
 fn step_name(key: &str) -> &str {
-    key.split(['#', '[']).next().unwrap_or(key)
+    // `split` always yields at least one piece.
+    key.split(['#', '[']).next().unwrap_or_default()
 }
 
 /// Tells watchers of the run that something happened.
 pub(crate) async fn notify_run(backend: &Backend, run_id: RunId, notice: Value) {
-    let _ = backend
-        .pubsub
-        .publish(&channels::run(run_id), notice.to_string().into_bytes())
-        .await;
+    channels::notify(
+        &*backend.pubsub,
+        &channels::run(run_id),
+        notice.to_string().into_bytes(),
+    )
+    .await;
 }
 
 enum Wake {
@@ -718,7 +721,9 @@ impl Exec<'_> {
             durable.step.outcome = tracing::field::Empty,
             durable.step.error = tracing::field::Empty,
         );
-        // Best effort: lets watchers show the attempt as running.
+        // Best effort: lets watchers show the attempt as running. Not
+        // awaited, so it may land after this step's own `{"seq"}` notice;
+        // `watch` drops a `step_started` for an attempt it already saw end.
         let backend = self.env.backend.clone();
         let run_id = self.run.id;
         let notice = json!({"step_started": {"key": key, "attempt": attempt}});

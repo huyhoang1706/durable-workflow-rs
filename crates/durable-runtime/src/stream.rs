@@ -130,10 +130,12 @@ impl Channel {
         });
         match result {
             Ok(_) => {
-                let _ = self
-                    .pubsub
-                    .publish(&channels::stream(self.run_id, &self.name), vec![])
-                    .await;
+                channels::notify(
+                    &*self.pubsub,
+                    &channels::stream(self.run_id, &self.name),
+                    vec![],
+                )
+                .await;
             }
             Err(Error::Closed) => {
                 self.buf.lock().closed = true;
@@ -389,10 +391,7 @@ pub(crate) async fn close_run_streams(backend: &Backend, run_id: RunId) {
         return;
     }
     for name in names {
-        let _ = backend
-            .pubsub
-            .publish(&channels::stream(run_id, &name), vec![])
-            .await;
+        channels::notify(&*backend.pubsub, &channels::stream(run_id, &name), vec![]).await;
     }
 }
 
@@ -433,9 +432,11 @@ impl<T: Serialize> StreamWriter<T> {
             self.hub.warn_unconfigured();
             return Ok(());
         };
-        let value = serde_json::to_value(item)
-            .map_err(|e| StepError::fatal(format!("stream chunk is not serializable: {e}")))?;
-        let bytes = value.to_string().len();
+        let not_serializable = |e: serde_json::Error| {
+            StepError::fatal(format!("stream chunk is not serializable: {e}"))
+        };
+        let value = serde_json::to_value(item).map_err(not_serializable)?;
+        let bytes = json_len(&value);
         if bytes > self.hub.limits.max_chunk_bytes {
             return Err(StepError::fatal(format!(
                 "stream chunk of {bytes} bytes exceeds max_payload_bytes ({})",
@@ -475,6 +476,24 @@ impl<T: Serialize> StreamWriter<T> {
             ch.close().await;
         }
     }
+}
+
+/// The length of `value` serialized as JSON, without building the string.
+fn json_len(value: &serde_json::Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    // Writing a `Value` to an infallible writer cannot fail.
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
 }
 
 #[cfg(test)]
@@ -586,6 +605,17 @@ mod tests {
 
     fn data(s: &str) -> ChunkBody {
         ChunkBody::Data(Value::from(s))
+    }
+
+    #[test]
+    fn json_len_matches_the_serialized_length() {
+        for v in [
+            serde_json::json!(null),
+            serde_json::json!("tiếng việt \"quoted\" \n"),
+            serde_json::json!({"a": [1, 2.5, {"b": true}], "c": ""}),
+        ] {
+            assert_eq!(json_len(&v), v.to_string().len(), "{v}");
+        }
     }
 
     #[tokio::test]
