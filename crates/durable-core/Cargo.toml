@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+durable-sm.workspace = true
 chrono.workspace = true
 futures.workspace = true
 serde.workspace = true

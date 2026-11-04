@@ -14,3 +14,9 @@ if cargo tree -p durable-workflow --features standalone -e normal | grep -q open
     exit 1
 fi
 cargo build -p durable-workflow --features standalone
+
+# Language bindings embed durable-sm: it must stay free of async runtimes and IO.
+if cargo tree -p durable-sm -e normal | grep -qE ' (tokio|futures|async-trait)[a-z_-]* v'; then
+    echo "error: durable-sm depends on an async runtime" >&2
+    exit 1
+fi

@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::{
     Dep, RetryPolicy, StepError, WorkflowError,
-    core::{CmdFuture, CmdKind, Core, Resolution, StepSpec, StepStart},
+    core::{CmdFuture, Command, Core, Resolution, StepStart, step_error},
     driver::SyncShared,
 };
 
@@ -122,13 +122,7 @@ impl WfAsyncCtx {
     ) -> impl Future<Output = Result<(), WorkflowError>> + Send + 'static {
         let (core, key) = (self.core.clone(), self.core.user_key(name));
         async move {
-            match CmdFuture::new(
-                core.clone(),
-                key.clone(),
-                CmdKind::Sleep { dur, fire_at: None },
-            )
-            .await?
-            {
+            match CmdFuture::new(core.clone(), key.clone(), Command::Sleep { dur }).await? {
                 Resolution::Slept => Ok(()),
                 other => Err(unexpected(&core, &key, &other)),
             }
@@ -179,7 +173,7 @@ impl WfAsyncCtx {
     ) -> impl Future<Output = Result<Hook<T>, WorkflowError>> + Send + 'static {
         let (core, key) = (self.core.clone(), self.core.user_key(name));
         async move {
-            match CmdFuture::new(core.clone(), key.clone(), CmdKind::Hook { token }).await? {
+            match CmdFuture::new(core.clone(), key.clone(), Command::Hook { token }).await? {
                 Resolution::Hook {
                     token,
                     conflict: true,
@@ -315,16 +309,12 @@ impl<T: DeserializeOwned + Send + 'static> Future for StepBuilder<T> {
                  timeout,
              }| {
                 Box::pin(async move {
-                    let spec = StepSpec {
-                        start: Some(start),
-                        policy,
-                        timeout,
-                        attempts: 0,
-                        retry_at: None,
-                    };
-                    match CmdFuture::new(core.clone(), key.clone(), CmdKind::Step(spec)).await? {
-                        Resolution::Step(Ok(v)) => decode(&core, &key, v),
-                        Resolution::Step(Err(e)) => Err(WorkflowError::Step(e)),
+                    let command = Command::Step { policy, timeout };
+                    match CmdFuture::step(core.clone(), key.clone(), command, start).await? {
+                        Resolution::Step { result: Ok(v) } => decode(&core, &key, v),
+                        Resolution::Step { result: Err(f) } => {
+                            Err(WorkflowError::Step(step_error(f)))
+                        }
                         other => Err(unexpected(&core, &key, &other)),
                     }
                 })
@@ -344,15 +334,13 @@ struct WaitCfg {
 
 impl WaitCfg {
     fn command(self) -> (Arc<Core>, String, CmdFuture) {
-        let kind = CmdKind::Wait {
+        let command = Command::Wait {
             kind: self.kind,
             name: self.name,
             filter: self.filter,
             timeout: self.timeout,
-            started: false,
-            timeout_at: None,
         };
-        let fut = CmdFuture::new(self.core.clone(), self.key.clone(), kind);
+        let fut = CmdFuture::new(self.core.clone(), self.key.clone(), command);
         (self.core, self.key, fut)
     }
 }
@@ -406,7 +394,7 @@ impl<T: DeserializeOwned + Send + 'static> Future for WaitBuilder<T> {
             let (core, key, fut) = cfg.command();
             Box::pin(async move {
                 match fut.await? {
-                    Resolution::Signal(Some(v)) => decode(&core, &key, v),
+                    Resolution::Signal { payload: Some(v) } => decode(&core, &key, v),
                     other => Err(unexpected(&core, &key, &other)),
                 }
             })
@@ -434,8 +422,8 @@ impl<T: DeserializeOwned + Send + 'static> Future for TimedWaitBuilder<T> {
             let (core, key, fut) = cfg.command();
             Box::pin(async move {
                 match fut.await? {
-                    Resolution::Signal(Some(v)) => decode(&core, &key, v).map(Some),
-                    Resolution::Signal(None) => Ok(None),
+                    Resolution::Signal { payload: Some(v) } => decode(&core, &key, v).map(Some),
+                    Resolution::Signal { payload: None } => Ok(None),
                     other => Err(unexpected(&core, &key, &other)),
                 }
             })
@@ -466,7 +454,7 @@ impl<T> Hook<T> {
         let key = core.key_for(&format!("{}[dispose]", self.key));
         let token = self.token;
         async move {
-            match CmdFuture::new(core.clone(), key.clone(), CmdKind::HookDispose { token }).await? {
+            match CmdFuture::new(core.clone(), key.clone(), Command::HookDispose { token }).await? {
                 Resolution::Disposed => Ok(()),
                 other => Err(unexpected(&core, &key, &other)),
             }

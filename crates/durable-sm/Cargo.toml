@@ -1,0 +1,14 @@
+[package]
+name = "durable-sm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sans-IO replay state machine shared by every durable-workflow SDK"
+
+# No tokio, no futures, no IO: language bindings (napi, PyO3, WASM) embed this crate.
+[dependencies]
+chrono.workspace = true
+rand_chacha.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

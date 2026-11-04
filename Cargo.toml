@@ -25,6 +25,7 @@ redis = { version = "1.7", default-features = false, features = ["tokio-comp", "
 testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
 
 durable-core = { path = "crates/durable-core" }
+durable-sm = { path = "crates/durable-sm" }
 durable-runtime = { path = "crates/durable-runtime" }
 durable-testkit = { path = "crates/durable-testkit" }
 durable-memory = { path = "plugins/durable-memory" }
