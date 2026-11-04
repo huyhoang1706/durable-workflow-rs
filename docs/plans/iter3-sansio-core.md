@@ -18,6 +18,16 @@ We are closer to this than it looks. `durable-runtime/src/core.rs` already works
 | Decisions mixed with IO | `engine.rs` `run_loop`, `on_step_done`, `registrations`, `next_wake` | The "what to do next" logic (retry math, timers due, suspend vs wait inline) is only callable from inside the tokio engine. |
 | Driver polls after every event | `engine.rs` `rebuild` | Fine for a Rust future (a poll is a function call), too costly for JS where reaching quiescence means draining the microtask queue. |
 
+Decisions confirmed with the user:
+- **Handles in the in-process API, keys everywhere else.**
+  - `Replayer` ctx calls return an opaque `Handle(u32)`, and resolutions come back as `(Handle, Resolution)`.
+    Only the core knows the key scheme (`name`, `name#1`, `name[0]`, `key[recv]`, `key[dispose]`), so it
+    can change without breaking any SDK, and no SDK can compute a key differently from another.
+  - Keys stay what history stores. They are exposed in `frontier()`, faults, logs/OTel, and in the future HTTP
+    protocol, where each request is a fresh process and a handle would mean nothing.
+- **Rust workflows switch to the new core in P0.** There is no feature flag and no period with both
+  cores. The existing test suite is the safety net.
+
 ## Goals
 
 1. A crate, **`durable-sm`**, holding all replay and decision logic, with no tokio, no futures, no IO
@@ -271,11 +281,7 @@ or, for sync `def` steps, in a thread pool.
 
 ## Open questions
 
-1. **Handle vs key at the boundary.** Handles are cheap and hide key generation (`#1`, `[0]`). Exposing keys
-   would make HTTP/debugging easier. Proposal: handles in the API, keys in `frontier()` and errors.
-2. **Rust workflows on the new core**: keep `Core` behind a feature for one release, or switch straight away? Proposal:
-   switch in P0. The suite is the safety net.
-3. **Mixed-language workers**: can one worker host Rust and TS workflows at once? Nothing prevents it,
+1. **Mixed-language workers**: can one worker host Rust and TS workflows at once? Nothing prevents it,
    because registration is by workflow name. Defer until someone asks.
-4. **Node threading**: tokio runs on its own threads and JS on the main thread. Step results cross
+2. **Node threading**: tokio runs on its own threads and JS on the main thread. Step results cross
    via `ThreadsafeFunction`. Check that the throughput of many tiny steps is acceptable before P3 is called done.
