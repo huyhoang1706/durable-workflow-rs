@@ -1,13 +1,6 @@
 use std::{fmt, time::Duration};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorClass {
-    Retryable,
-    /// Stops retries immediately.
-    Fatal,
-    /// Retry no sooner than this.
-    RetryAfter(Duration),
-}
+pub use durable_sm::ErrorClass;
 
 /// Lets a dependency's error pick how a step failure is retried.
 pub trait ClassifyError {
