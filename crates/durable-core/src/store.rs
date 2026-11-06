@@ -4,29 +4,10 @@ use serde_json::Value;
 
 use crate::{
     CreateOutcome, Event, EventKind, NewRun, QueueItem, Result, Run, RunFilter, RunId, RunStatus,
-    WaitKind, WorkflowDefinition,
+    WorkflowDefinition,
 };
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WaitReg {
-    pub key: String,
-    pub kind: WaitKind,
-    /// Signal name, hook token or event name.
-    pub name: String,
-    pub filter: Option<Value>,
-    pub timeout_at: Option<DateTime<Utc>>,
-}
-
-impl WaitReg {
-    /// Inbox name that satisfies this wait.
-    pub fn inbox_name(&self) -> String {
-        match self.kind {
-            WaitKind::Signal => self.name.clone(),
-            WaitKind::Hook => format!("hook:{}", self.name),
-            WaitKind::Event => format!("event:{}", self.name),
-        }
-    }
-}
+pub use durable_sm::WaitReg;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HookReg {

@@ -273,7 +273,7 @@ or, for sync `def` steps, in a thread pool.
 | Phase | Work | Done when |
 |---|---|---|
 | P0 ✅ | Create `crates/durable-sm`. Move `Core` → `Replayer` (handles, `advance`, no wakers/closures/deps). `CmdFuture` becomes a ~30-line adapter: handle + waker map in `durable-runtime`. | Whole existing suite passes unchanged. `durable-sm` has no tokio/futures dependency (CI check). |
-| P1 | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
+| P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
 | P3 | `bindings/node` (napi-rs): embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/node-onboarding` passes the conformance corpus and a crash/resume chaos test. |
 | P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
@@ -307,6 +307,31 @@ regression. Where the code differs from the sketch above:
 - **Rust host** (`durable-runtime/src/core.rs`): it is now `Mutex<Replayer>` plus `Handle → Waker` and
   `key → StepStart` maps. The engine replays and delivers live commits through the same
   `while core.advance() == RunCode { driver.poll() }` loop.
+
+## P1 as built
+
+P1 landed on `feat/sm-decider-p1`. `durable-sm/src/decide.rs` now holds `decide`, `step_outcome` and
+`open_waits`, and `run_loop` in `engine.rs` is a `match` on `Decision` whose arms do only IO. The full suite
+passes against local Postgres/Redis, apart from the known streaming chaos flake. Where the code differs from the
+sketch above:
+
+- **`Decision` has `Run` and `Suspend` instead of `Launch` and `Idle`.** Launching and waiting always come
+  together: `Run { launch, wake_at }` means "start these attempts in order, then wait in-process until a step
+  finishes or `wake_at`". `Suspend { wake_at }` is only returned when nothing is running and nothing is launched.
+  `wake_at` already ignores the retry time of steps that are running or being launched, as the old code did by
+  computing it after launching.
+- **The host still decides about spent step bodies.** The decider cannot know that a Rust `FnOnce` body was taken
+  by an earlier attempt. The engine launches the listed attempts up to the first spent body, then rebuilds,
+  exactly as before. JS and Python hosts can call a body again and never need this.
+- **Hook tokens are minted by the shell.** `Register` carries `HookRequest { key, token: Option<String> }`. A
+  missing token becomes a fresh UUIDv7 in the engine, because it is random and the decider is pure.
+- **`open_waits` was lifted too.** It is pure and every commit needs it, including from the HTTP executor later.
+- **More pure types moved to `durable-sm`:** `ErrorClass`, `WaitReg`, `far_future` and `saturating_add`.
+  `durable-core` and `durable-runtime` re-export them. `StepError` and `ClassifyError` stay in `durable-runtime`:
+  the built-in `ClassifyError` impls for `reqwest` and `sqlx` errors would break the orphan rule if the trait moved.
+  `step_outcome` takes `Result<Value, (String, ErrorClass)>` instead.
+- **Fault, cancel and "body finished" checks stay in the engine,** ahead of `decide`. They depend on driver and
+  store state, not on the frontier.
 
 ## Open questions
 

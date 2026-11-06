@@ -18,15 +18,16 @@ use std::{
 use chrono::{DateTime, Utc};
 use durable_core::{
     Backend, Commit, CommitOutcome, ComputePool, Error, Event, EventKind, HookReg, Metric, Result,
-    Run, RunId, RunStatus, WaitReg, saturating_add,
+    Run, RunId, RunStatus, saturating_add,
 };
+use durable_sm::{DecideInput, Decision};
 use futures::StreamExt;
 use serde_json::{Value, json};
 use tokio::{sync::Notify, task::AbortHandle};
 use tracing::Instrument;
 
 use crate::{
-    Deps, ErrorClass, StepError, WorkflowError, channels,
+    Deps, StepError, WorkflowError, channels,
     core::{Advance, Core, Pending, StepStart},
     driver::{Driver, DriverStatus},
     history,
@@ -336,97 +337,58 @@ impl Exec<'_> {
             if let DriverStatus::Finished(res) = self.status.clone() {
                 return self.on_finished(res).await;
             }
-            let now = self.now();
-            if self.run.deadline_at.is_some_and(|d| now >= d) {
-                return self.on_deadline().await;
-            }
             let frontier = self.core.frontier();
-            if frontier.is_empty() {
-                return self
-                    .on_fault(
-                        "workflow awaited a non-durable future (only ctx.* calls may be awaited)"
-                            .into(),
-                    )
-                    .await;
-            }
             self.reap(&frontier);
-
-            // 1. Register new timers, waits and hooks (and sync open waits).
-            let (events, hooks) = self.registrations(&frontier, now);
-            let has_open_waits = frontier.iter().any(|p| matches!(p, Pending::Wait { .. }));
-            if !events.is_empty() || !hooks.is_empty() || (has_open_waits && !self.inbox_checked) {
-                self.inbox_checked = true;
-                self.commit_running(events, hooks, &frontier).await?;
-                continue;
-            }
-
-            // 2. Fire due timers and wait timeouts.
-            let due: Vec<EventKind> = frontier
-                .iter()
-                .filter_map(|p| match p {
-                    Pending::Sleep {
-                        key,
-                        fire_at: Some(t),
-                        ..
-                    } if *t <= now => Some(EventKind::TimerFired { key: key.clone() }),
-                    Pending::Wait {
-                        key,
-                        timeout_at: Some(t),
-                        ..
-                    } if *t <= now => Some(EventKind::WaitTimedOut { key: key.clone() }),
-                    _ => None,
-                })
-                .collect();
-            if !due.is_empty() {
-                self.commit_running(due, vec![], &frontier).await?;
-                continue;
-            }
-
-            // 3. Start steps that are ready.
-            let mut needs_rebuild = false;
-            for p in &frontier {
-                let Pending::Step {
-                    key,
-                    attempts,
-                    retry_at,
-                    timeout,
-                    ..
-                } = p
-                else {
-                    continue;
-                };
-                if self.running.contains_key(key) || retry_at.is_some_and(|t| t > now) {
+            let decision = durable_sm::decide(&DecideInput {
+                frontier: &frontier,
+                now: self.now(),
+                deadline_at: self.run.deadline_at,
+                running: &|key| self.running.contains_key(key),
+                inbox_checked: self.inbox_checked,
+                inline_threshold: self.env.inline_threshold,
+            });
+            let next_wake = match decision {
+                Decision::DeadlineExceeded => return self.on_deadline().await,
+                Decision::Fault { message } => return self.on_fault(message).await,
+                Decision::Register { events, hooks } => {
+                    self.inbox_checked = true;
+                    let hooks = hooks
+                        .into_iter()
+                        .map(|h| HookReg {
+                            key: h.key,
+                            token: h.token.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+                        })
+                        .collect();
+                    self.commit_running(events, hooks, &frontier).await?;
                     continue;
                 }
-                if !self.core.has_start(key) {
-                    // The FnOnce closure was spent by an earlier attempt.
-                    needs_rebuild = true;
-                    break;
+                Decision::Fire { events } => {
+                    self.commit_running(events, vec![], &frontier).await?;
+                    continue;
                 }
-                self.launch(key, attempts + 1, *timeout);
-            }
-            if needs_rebuild {
-                self.rebuild().await;
-                continue;
-            }
-
-            self.publish_steps().await;
-
-            // 4. Decide whether to wait here or suspend.
-            let next_wake = self.next_wake(&frontier);
-            if self.running.is_empty() {
-                let inline = next_wake.is_some_and(|t| {
-                    (t - now)
-                        .to_std()
-                        .is_ok_and(|d| d <= self.env.inline_threshold)
-                });
-                if !inline {
-                    if let Some(outcome) = self.suspend(&frontier, next_wake).await? {
+                Decision::Suspend { wake_at } => {
+                    self.publish_steps().await;
+                    if let Some(outcome) = self.suspend(&frontier, wake_at).await? {
                         return Ok(outcome);
                     }
                     continue;
                 }
-            }
+                Decision::Run { launch, wake_at } => {
+                    // A spent FnOnce body (an earlier attempt took it) needs a rebuild.
+                    if let Some(spent) = launch.iter().position(|l| !self.core.has_start(&l.key)) {
+                        for l in &launch[..spent] {
+                            self.launch(&l.key, l.attempt, l.timeout);
+                        }
+                        self.rebuild().await;
+                        continue;
+                    }
+                    for l in &launch {
+                        self.launch(&l.key, l.attempt, l.timeout);
+                    }
+                    self.publish_steps().await;
+                    wake_at
+                }
+            };
 
             let clock = self.env.backend.clock.clone();
             let (done_rx, cancel_sub, lost) = (&mut self.done_rx, &mut self.cancel_sub, &self.lost);
@@ -489,103 +451,6 @@ impl Exec<'_> {
         });
     }
 
-    fn registrations(
-        &self,
-        frontier: &[Pending],
-        now: DateTime<Utc>,
-    ) -> (Vec<EventKind>, Vec<HookReg>) {
-        let (mut events, mut hooks) = (vec![], vec![]);
-        for p in frontier {
-            match p {
-                Pending::Sleep {
-                    key,
-                    dur,
-                    fire_at: None,
-                } => events.push(EventKind::TimerScheduled {
-                    key: key.clone(),
-                    fire_at: saturating_add(now, *dur),
-                }),
-                Pending::Wait {
-                    key,
-                    kind,
-                    name,
-                    filter,
-                    timeout,
-                    started: false,
-                    ..
-                } => events.push(EventKind::WaitStarted {
-                    key: key.clone(),
-                    kind: *kind,
-                    name: name.clone(),
-                    filter: filter.clone(),
-                    timeout_at: timeout.map(|d| saturating_add(now, d)),
-                }),
-                Pending::Hook { key, token } => hooks.push(HookReg {
-                    key: key.clone(),
-                    token: token
-                        .clone()
-                        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-                }),
-                Pending::HookDispose { key, token } => events.push(EventKind::HookDisposed {
-                    key: key.clone(),
-                    token: token.clone(),
-                }),
-                _ => {}
-            }
-        }
-        (events, hooks)
-    }
-
-    fn next_wake(&self, frontier: &[Pending]) -> Option<DateTime<Utc>> {
-        let timers = frontier.iter().filter_map(|p| match p {
-            Pending::Sleep { fire_at, .. } => *fire_at,
-            Pending::Wait { timeout_at, .. } => *timeout_at,
-            Pending::Step { key, retry_at, .. } if !self.running.contains_key(key) => *retry_at,
-            _ => None,
-        });
-        timers.chain(self.run.deadline_at).min()
-    }
-
-    /// Wait registrations for every open wait, minus those closing in `events`.
-    fn open_waits(
-        &self,
-        frontier: &[Pending],
-        events: &[EventKind],
-        now: DateTime<Utc>,
-    ) -> Vec<WaitReg> {
-        let closing: HashSet<&str> = events
-            .iter()
-            .filter_map(|e| match e {
-                EventKind::WaitTimedOut { key } => Some(key.as_str()),
-                _ => None,
-            })
-            .collect();
-        frontier
-            .iter()
-            .filter_map(|p| match p {
-                Pending::Wait {
-                    key,
-                    kind,
-                    name,
-                    filter,
-                    timeout,
-                    timeout_at,
-                    ..
-                } if !closing.contains(key.as_str()) => {
-                    let timeout_at = timeout_at.or_else(|| timeout.map(|d| saturating_add(now, d)));
-                    Some(WaitReg {
-                        key: key.clone(),
-                        kind: *kind,
-                        name: name.clone(),
-                        filter: filter.clone(),
-                        timeout_at,
-                    })
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
     fn build_commit(
         &self,
         events: Vec<EventKind>,
@@ -595,7 +460,7 @@ impl Exec<'_> {
         wake_at: Option<DateTime<Utc>>,
         at: DateTime<Utc>,
     ) -> Commit {
-        let waits = self.open_waits(frontier, &events, at);
+        let waits = durable_sm::open_waits(frontier, &events, at);
         let mut c = Commit::new(self.run.id, self.last_seq, at);
         c.awaiting = waits.iter().map(|w| w.name.clone()).collect();
         c.waits = waits;
@@ -817,37 +682,15 @@ impl Exec<'_> {
         }) else {
             return Ok(());
         };
-        let key = done.key;
-        let step_key = key.clone();
-        let mut result = done.result;
-        if let Ok(v) = &result
-            && v.to_string().len() > self.env.max_payload_bytes
-        {
-            result = Err(StepError::fatal(format!(
-                "step output exceeds max_payload_bytes ({}); pass large data by reference",
-                self.env.max_payload_bytes
-            )));
-        }
-        let at = self.now();
-        let event = match result {
-            Ok(output) => EventKind::StepSucceeded { key, output },
-            Err(e) => {
-                let retryable = e.class != ErrorClass::Fatal;
-                let retry = retryable && policy.allows_retry(done.attempt);
-                let delay = match e.class {
-                    ErrorClass::RetryAfter(d) => d,
-                    _ => policy.delay_after(done.attempt),
-                };
-                let retry_at = retry.then(|| saturating_add(at, delay));
-                EventKind::StepFailed {
-                    key,
-                    attempt: done.attempt,
-                    error: e.message,
-                    retryable,
-                    retry_at,
-                }
-            }
-        };
+        let step_key = done.key.clone();
+        let event = durable_sm::step_outcome(
+            done.key,
+            &policy,
+            done.attempt,
+            done.result.map_err(|e| (e.message, e.class)),
+            self.now(),
+            self.env.max_payload_bytes,
+        );
         let (outcome, failed) = match &event {
             EventKind::StepSucceeded { .. } => ("succeeded", false),
             EventKind::StepFailed {
