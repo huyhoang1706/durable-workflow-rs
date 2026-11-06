@@ -39,7 +39,8 @@ streams an LLM answer to a browser while a step runs.
 
 ```
 crates/
-  durable-core/       ids, records, event model, errors, every plugin trait (no infrastructure)
+  durable-sm/         sans-IO replay state machine and event model; no tokio, no IO (embedded by SDK bindings)
+  durable-core/       ids, records, errors, every plugin trait (no infrastructure); re-exports the event model
   durable-runtime/    replay engine (async + sync drivers), contexts, compute pool, Worker, Client
   durable-macros/     #[workflow], #[step]
   durable-api/        axum ops router (mountable or standalone)
@@ -55,7 +56,8 @@ plugins/
 examples/             embedded-axum, standalone-worker, llm-streaming
 ```
 
-Plugins depend only on `durable-core`. `durable-runtime` depends only on `durable-core`.
+Plugins depend only on `durable-core`. `durable-runtime` depends only on `durable-core` and `durable-sm`.
+`durable-sm` depends on neither, and CI keeps it free of async runtimes.
 
 ## Quick start (in-memory)
 

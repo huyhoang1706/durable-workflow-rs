@@ -272,12 +272,41 @@ or, for sync `def` steps, in a thread pool.
 
 | Phase | Work | Done when |
 |---|---|---|
-| P0 | Create `crates/durable-sm`. Move `Core` → `Replayer` (handles, `advance`, no wakers/closures/deps). `CmdFuture` becomes a ~30-line adapter: handle + waker map in `durable-runtime`. | Whole existing suite passes unchanged. `durable-sm` has no tokio/futures dependency (CI check). |
+| P0 ✅ | Create `crates/durable-sm`. Move `Core` → `Replayer` (handles, `advance`, no wakers/closures/deps). `CmdFuture` becomes a ~30-line adapter: handle + waker map in `durable-runtime`. | Whole existing suite passes unchanged. `durable-sm` has no tokio/futures dependency (CI check). |
 | P1 | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
 | P3 | `bindings/node` (napi-rs): embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/node-onboarding` passes the conformance corpus and a crash/resume chaos test. |
 | P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
+
+## P0 as built
+
+P0 landed on `feat/sm-core-p0`. The full suite passes, and so do the Postgres/Redis plugin and chaos suites against
+local servers. `chaos::streaming_steps_finish_with_correct_output_despite_worker_kills` fails about 1 run in 4
+with "stream closed at the end", and it fails the same way on `main`, so it is a pre-existing flake, not a
+regression. Where the code differs from the sketch above:
+
+- **`durable-sm` also owns the event model and `RetryPolicy`.** `durable-core` depends on tokio and futures, so
+  the replayer cannot depend on it. `Event`, `EventKind` and `WaitKind` moved to `durable-sm`; `durable-core`
+  and `durable_runtime::retry` re-export them, so every public path is unchanged. `ci.sh` fails if `durable-sm`
+  ever pulls in tokio, futures or async-trait.
+- **Keys are reserved apart from issuing.** The API is `user_key(name)` / `key_for(name)`, then
+  `issue(key, Command) -> Handle`. Rust builders take their key when `ctx.step(..)` is called but issue the
+  command on first poll, after `.retry()` / `.timeout()`. Merging the two would renumber `#n` keys for code that
+  creates builders in one order and awaits them in another, which breaks stored histories. The one-call
+  `step(name, opts)` the bindings want is a thin wrapper, added with the Node binding.
+- **Aborts are a state, not a resolution.** `abort() -> Option<Abort>` (`Interrupted` beats `Cancelled` beats
+  `Fault`) is checked before a handle's resolution, as `CmdFuture::poll` always did.
+- **`advance()` stops after every resolving event**, and returns `RunCode` / `Live`. Batching several
+  resolutions per round is not safe for Rust: `select!` and `join!` choose among ready futures in their own
+  order, so delivering a timer and a signal together could pick a different winner than the live execution
+  did. Non-resolving events (`TimerScheduled`, `WaitStarted`, retried `StepFailed`) are still applied without
+  running the code. A batched mode for hosts whose promises settle in a defined order (Node) is a P3 question.
+- **Not added yet:** `finish(result)` (the driver still returns the body's result) and handles in
+  `frontier()`. Neither is needed until a binding exists.
+- **Rust host** (`durable-runtime/src/core.rs`): it is now `Mutex<Replayer>` plus `Handle → Waker` and
+  `key → StepStart` maps. The engine replays and delivers live commits through the same
+  `while core.advance() == RunCode { driver.poll() }` loop.
 
 ## Open questions
 

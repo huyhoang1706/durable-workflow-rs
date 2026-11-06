@@ -27,7 +27,7 @@ use tracing::Instrument;
 
 use crate::{
     Deps, ErrorClass, StepError, WorkflowError, channels,
-    core::{Core, Pending, StepStart},
+    core::{Advance, Core, Pending, StepStart},
     driver::{Driver, DriverStatus},
     history,
     step::{self, StepInfo},
@@ -173,7 +173,7 @@ async fn execute_run(
         .await
         .ok();
     let (done_tx, done_rx) = tokio::sync::mpsc::unbounded_channel();
-    let core = Core::new(run_id, env.deps.clone());
+    let core = Core::new(run_id, env.deps.clone(), vec![]);
     let mut exec = Exec {
         env,
         wf,
@@ -308,24 +308,18 @@ impl Exec<'_> {
         if let Some(old) = self.driver.as_mut() {
             old.interrupt();
         }
-        self.core = Core::new(self.run.id, self.env.deps.clone());
+        self.core = Core::new(self.run.id, self.env.deps.clone(), self.history.clone());
         let mut driver = self.wf.start(self.core.clone(), self.run.input.clone());
         self.status = DriverStatus::Pending;
-        // The poll after the newest event is live: it is the first time the
-        // body sees that event, unless an earlier execution crashed before
-        // acting on it, in which case acting twice beats never acting.
-        let last = self.history.len().saturating_sub(1);
-        for (i, ev) in self.history.iter().enumerate() {
-            self.core.set_replaying(i < last);
-            self.core.feed(ev);
+        // The poll after the newest event is live (`is_replaying` is false): it
+        // is the first time the body sees that event, unless an earlier
+        // execution crashed before acting on it, in which case acting twice
+        // beats never acting.
+        while self.core.advance() == Advance::RunCode {
             self.status = driver.poll().await;
             if self.core.fault().is_some() {
                 break;
             }
-        }
-        self.core.set_replaying(false);
-        if self.history.is_empty() {
-            self.status = driver.poll().await;
         }
         self.driver = Some(driver);
     }
@@ -396,7 +390,6 @@ impl Exec<'_> {
                     attempts,
                     retry_at,
                     timeout,
-                    has_start,
                     ..
                 } = p
                 else {
@@ -405,7 +398,7 @@ impl Exec<'_> {
                 if self.running.contains_key(key) || retry_at.is_some_and(|t| t > now) {
                     continue;
                 }
-                if !has_start {
+                if !self.core.has_start(key) {
                     // The FnOnce closure was spent by an earlier attempt.
                     needs_rebuild = true;
                     break;
@@ -654,13 +647,14 @@ impl Exec<'_> {
         applied.extend(out.generated.iter().cloned());
         self.last_seq = out.last_seq;
         self.cancel_requested |= out.cancel_requested;
-        for ev in applied {
-            if ev.kind.is_terminal() {
-                continue;
-            }
-            self.raw.push(ev.clone());
-            self.history.push(ev.clone());
-            self.core.feed(&ev);
+        let applied: Vec<Event> = applied
+            .into_iter()
+            .filter(|ev| !ev.kind.is_terminal())
+            .collect();
+        self.raw.extend(applied.iter().cloned());
+        self.history.extend(applied.iter().cloned());
+        self.core.push_live(applied);
+        while self.core.advance() == Advance::RunCode {
             if let Some(d) = self.driver.as_mut() {
                 self.status = d.poll().await;
             }
