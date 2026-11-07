@@ -13,7 +13,7 @@ pub use queue::RedisQueue;
 pub use services::{RedisCache, RedisPubSub, RedisRateLimiter};
 pub use streams::RedisStreams;
 
-use durable_core::Error;
+use durable_spi::Error;
 
 pub(crate) fn be(e: redis::RedisError) -> Error {
     Error::Backend(e.to_string())
@@ -29,7 +29,7 @@ pub struct RedisParts {
 }
 
 /// Connect every Redis slot with a shared key `prefix` (e.g. `"dw"`).
-pub async fn connect(url: &str, prefix: &str) -> durable_core::Result<RedisParts> {
+pub async fn connect(url: &str, prefix: &str) -> durable_spi::Result<RedisParts> {
     let client = redis::Client::open(url).map_err(be)?;
     let conn = redis::aio::ConnectionManager::new(client.clone())
         .await

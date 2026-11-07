@@ -29,4 +29,4 @@ pub use retry::RetryPolicy;
 pub use stream::StreamWriter;
 pub use watch::{RunUpdate, StreamBody, StreamItem, StreamReadBuilder, WatchBuilder};
 pub use worker::{BuildError, Worker, WorkerBuilder, WorkerHandle};
-pub use workflow::{AsyncWorkflow, SyncWorkflow, WorkflowOptions};
+pub use workflow::{AsyncWorkflow, IntoWorkflow, SyncWorkflow, WorkflowOptions};

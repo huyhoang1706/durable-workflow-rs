@@ -22,7 +22,7 @@ otel = ["observable", "dep:durable-otel"]
 standalone = ["postgres", "observable", "dep:durable-api", "dep:axum", "dep:tokio"]
 
 [dependencies]
-durable-core.workspace = true
+durable-spi.workspace = true
 durable-runtime.workspace = true
 durable-macros = { path = "../durable-macros", optional = true }
 durable-memory = { workspace = true, optional = true }

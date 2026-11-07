@@ -6,8 +6,8 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use durable_core::{Error, RunStatus};
 use durable_runtime::*;
+use durable_spi::{Error, RunStatus};
 use serde_json::{Value, json};
 
 async fn approve(ctx: WfAsyncCtx, _: Value) -> Result<Value, WorkflowError> {
@@ -27,7 +27,7 @@ async fn a_client_cannot_reach_runs_of_another_namespace() {
 
     assert!(foreign.get_run(id).await.unwrap().is_none());
     assert!(foreign.in_flight(id).await.is_none());
-    let not_found = |r: durable_core::Result<()>| matches!(r, Err(Error::NotFound(_)));
+    let not_found = |r: durable_spi::Result<()>| matches!(r, Err(Error::NotFound(_)));
     assert!(matches!(foreign.events(id).await, Err(Error::NotFound(_))));
     assert!(not_found(
         foreign.signal(id, "approval", json!("evil")).await

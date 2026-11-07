@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use durable_core::{ComputePool, Job};
+use durable_spi::{ComputePool, Job};
 use parking_lot::Mutex;
 
 /// Fixed-size pool for blocking (CPU-bound) steps. Never runs on tokio threads.

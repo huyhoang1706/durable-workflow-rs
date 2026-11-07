@@ -2,8 +2,8 @@ mod common;
 
 use std::sync::Arc;
 
-use durable_core::{Cache, PubSub, Queue, RateLimiter};
 use durable_redis::{RedisCache, RedisPubSub, RedisQueue, RedisRateLimiter};
+use durable_spi::{Cache, PubSub, Queue, RateLimiter};
 
 async fn make_queue() -> Arc<dyn Queue> {
     Arc::new(RedisQueue::new(common::conn().await).prefix(common::unique_prefix()))
@@ -29,8 +29,8 @@ durable_testkit::cache_conformance!(make_cache());
 durable_testkit::pubsub_conformance!(make_pubsub());
 durable_testkit::rate_limiter_conformance!(make_limiter());
 
-use durable_core::StreamStore;
 use durable_redis::RedisStreams;
+use durable_spi::StreamStore;
 use durable_testkit::streams::StreamHarness;
 
 async fn make_streams(ttl: std::time::Duration) -> StreamHarness {

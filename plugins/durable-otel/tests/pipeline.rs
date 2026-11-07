@@ -4,9 +4,9 @@
 
 use std::{sync::OnceLock, time::Duration};
 
-use durable_core::Observer;
 use durable_otel::{OtelConfig, OtelGuard};
 use durable_runtime::{Client, StepError, WfAsyncCtx, Worker};
+use durable_spi::Observer;
 use durable_testkit::{ManualClock, t0};
 use opentelemetry::{Key, Value, trace::SpanId};
 use opentelemetry_sdk::{
@@ -123,7 +123,7 @@ async fn finish(env: &Env, id: uuid::Uuid) -> Json {
 async fn suspended(env: &Env, id: uuid::Uuid) {
     for _ in 0..2000 {
         let run = env.client.get_run(id).await.unwrap().unwrap();
-        if run.status == durable_core::RunStatus::Waiting {
+        if run.status == durable_spi::RunStatus::Waiting {
             return;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -139,10 +139,10 @@ fn flush() {
 async fn a_run_with_a_sleep_is_one_trace_across_two_executions() {
     let env = env(|w| {
         w.register_fn("otel_sleepy", |ctx: WfAsyncCtx, _: Json| async move {
-            let a: i64 = ctx.step("a", || async { Ok::<_, StepError>(1) }).await?;
+            let a: i64 = ctx.step("a", async { Ok::<_, StepError>(1) }).await?;
             ctx.sleep("nap", Duration::from_secs(3600)).await?;
             let b: i64 = ctx
-                .step("b", move || async move { Ok::<_, StepError>(a + 1) })
+                .step("b", async move { Ok::<_, StepError>(a + 1) })
                 .await?;
             Ok(b)
         })
@@ -227,7 +227,7 @@ async fn a_run_with_a_sleep_is_one_trace_across_two_executions() {
 async fn user_spans_and_logs_inside_a_step_nest_under_the_step() {
     let env = env(|w| {
         w.register_fn("otel_nested", |ctx: WfAsyncCtx, _: Json| async move {
-            ctx.step("work", || async {
+            ctx.step("work", async {
                 let inner = tracing::info_span!("user_op", op = "fetch");
                 let _g = inner.enter();
                 tracing::info!(target: "user", "inside the step");
@@ -278,7 +278,7 @@ async fn user_spans_and_logs_inside_a_step_nest_under_the_step() {
 async fn the_expected_metrics_are_recorded() {
     let env = env(|w| {
         w.register_fn("otel_metrics", |ctx: WfAsyncCtx, _: Json| async move {
-            ctx.step("only", || async { Ok::<_, StepError>(()) }).await
+            ctx.step("only", async { Ok::<_, StepError>(()) }).await
         })
     })
     .await;

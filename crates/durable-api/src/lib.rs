@@ -30,8 +30,8 @@ use axum::{
     },
     routing::{get, post},
 };
-use durable_core::{Error, RunFilter, RunId, RunStatus, StreamCursor};
 use durable_runtime::{Client, RunError, RunUpdate, StartOptions, StartOutcome};
+use durable_spi::{Error, RunFilter, RunId, RunStatus, StreamCursor};
 use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};

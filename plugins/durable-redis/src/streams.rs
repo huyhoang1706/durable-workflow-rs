@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use durable_core::{
+use durable_spi::{
     ChunkBody, Error, NewChunk, Result, RunId, StreamChunk, StreamCursor, StreamInfo, StreamStore,
 };
 use redis::{Script, aio::ConnectionManager};

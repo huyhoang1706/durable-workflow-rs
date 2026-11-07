@@ -74,7 +74,7 @@ fn register_mixed(b: WorkerBuilder, client: Client, probe: Probe) -> WorkerBuild
             for i in 0..3 {
                 let (client, probe) = (client.clone(), probe.clone());
                 total += ctx
-                    .step(&format!("s{i}"), move || async move {
+                    .step(&format!("s{i}"), async move {
                         let info = durable_workflow::step::current();
                         guarded(&client, &probe, info.idempotency_key()).await;
                         tokio::time::sleep(Duration::from_millis(40)).await;
@@ -263,11 +263,10 @@ async fn flushing_redis_mid_flight_is_recovered_by_the_reconciler() {
     let client = client(&backend);
     let w = worker(&backend)
         .register_fn("sleepy", |ctx: WfAsyncCtx, n: i64| async move {
-            ctx.step("a", move || async move { Ok::<_, StepError>(n) })
-                .await?;
+            ctx.step("a", async move { Ok::<_, StepError>(n) }).await?;
             ctx.sleep("nap", Duration::from_secs(2)).await?;
             let v: i64 = ctx
-                .step("b", move || async move { Ok::<_, StepError>(n * 2) })
+                .step("b", async move { Ok::<_, StepError>(n * 2) })
                 .await?;
             Ok(v)
         })
@@ -320,7 +319,7 @@ async fn concurrency_limit_holds_across_workers() {
                 move |ctx: WfAsyncCtx, _: Value| {
                     let (now, peak) = (now.clone(), peak.clone());
                     async move {
-                        ctx.step("work", move || async move {
+                        ctx.step("work", async move {
                             let cur = now.fetch_add(1, SeqCst) + 1;
                             peak.fetch_max(cur, SeqCst);
                             tokio::time::sleep(Duration::from_millis(120)).await;
@@ -378,7 +377,7 @@ async fn throttle_spaces_out_run_starts() {
             move |ctx: WfAsyncCtx, _: Value| {
                 let s = s.clone();
                 async move {
-                    ctx.step("mark", move || async move {
+                    ctx.step("mark", async move {
                         s.lock().push(Instant::now());
                         Ok::<_, StepError>(())
                     })
@@ -460,7 +459,7 @@ fn streamed_text(n: i64) -> String {
 fn register_streaming(b: WorkerBuilder) -> WorkerBuilder {
     b.register_fn("streaming", |ctx: WfAsyncCtx, n: i64| async move {
         let text: String = ctx
-            .step("gen", move || async move {
+            .step("gen", async move {
                 let w = durable_workflow::step::current().stream::<String>("tokens");
                 let mut all = String::new();
                 for k in 0..20 {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use durable_core::Clock;
+use durable_spi::Clock;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 

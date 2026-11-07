@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use durable_core::{Backend, ChunkBody, Event, RunId, StreamCursor};
+use durable_spi::{Backend, ChunkBody, Event, RunId, StreamCursor};
 use futures::{
     StreamExt,
     future::BoxFuture,
@@ -33,7 +33,7 @@ pub enum RunUpdate {
     StepStarted { key: String, attempt: u32 },
 }
 
-async fn require_run(backend: &Backend, id: RunId) -> Result<durable_core::Run, RunError> {
+async fn require_run(backend: &Backend, id: RunId) -> Result<durable_spi::Run, RunError> {
     backend
         .store
         .get_run(id)
@@ -127,10 +127,10 @@ impl WatchState {
                     for ev in events {
                         self.last_seq = ev.seq;
                         match &ev.kind {
-                            durable_core::EventKind::StepSucceeded { key, .. } => {
+                            durable_spi::EventKind::StepSucceeded { key, .. } => {
                                 self.succeeded.insert(key.clone());
                             }
-                            durable_core::EventKind::StepFailed { key, attempt, .. } => {
+                            durable_spi::EventKind::StepFailed { key, attempt, .. } => {
                                 self.failed.insert((key.clone(), *attempt));
                             }
                             _ => {}

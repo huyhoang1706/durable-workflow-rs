@@ -1,4 +1,4 @@
-//! Core types and plugin traits for the durable workflow framework.
+//! Service provider interface: ids, records and plugin traits for the durable workflow framework.
 //! Nothing here touches infrastructure; adapters live in `plugins/`.
 
 mod backend;

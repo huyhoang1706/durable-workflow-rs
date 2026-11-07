@@ -191,7 +191,7 @@ async fn watch_runs_and_tail_streams_from_the_command_line() {
         .poll_interval(std::time::Duration::from_millis(50))
         .register_fn("tokens", |ctx: WfAsyncCtx, words: Vec<String>| async move {
             let text: String = ctx
-                .step("gen", move || async move {
+                .step("gen", async move {
                     let w = step::current().stream::<String>("tokens");
                     for word in &words {
                         w.write(word)?;

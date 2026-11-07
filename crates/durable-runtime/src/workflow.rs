@@ -1,6 +1,6 @@
 use std::{future::Future, marker::PhantomData, sync::Arc, time::Duration};
 
-use durable_core::{ConcurrencySpec, RateLimitSpec, ThrottleSpec, WorkflowDefinition};
+use durable_spi::{ConcurrencySpec, RateLimitSpec, ThrottleSpec, WorkflowDefinition};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -119,6 +119,39 @@ pub trait SyncWorkflow: Send + Sync + 'static {
         ctx: &WfSyncCtx,
         input: Self::Input,
     ) -> Result<Self::Output, WorkflowError>;
+}
+
+/// Marker for [`IntoWorkflow`] implemented by async workflows.
+pub struct AsyncKind;
+/// Marker for [`IntoWorkflow`] implemented by sync workflows.
+pub struct SyncKind;
+
+/// A workflow value that [`WorkerBuilder::register`](crate::WorkerBuilder::register) and
+/// [`Client::start`](crate::Client::start) accept, whether async or sync. `#[workflow]` generates a
+/// unit struct named after the function, so the function itself is the value:
+/// `worker.register(onboarding)`. The marker `M` only keeps the two blanket impls apart and is
+/// always inferred.
+pub trait IntoWorkflow<M>: Sized {
+    const NAME: &'static str;
+
+    #[doc(hidden)]
+    fn register(self, builder: crate::WorkerBuilder) -> crate::WorkerBuilder;
+}
+
+impl<W: AsyncWorkflow> IntoWorkflow<AsyncKind> for W {
+    const NAME: &'static str = <W as AsyncWorkflow>::NAME;
+
+    fn register(self, builder: crate::WorkerBuilder) -> crate::WorkerBuilder {
+        builder.push(Arc::new(AsyncAdapter(Arc::new(self))))
+    }
+}
+
+impl<W: SyncWorkflow> IntoWorkflow<SyncKind> for W {
+    const NAME: &'static str = <W as SyncWorkflow>::NAME;
+
+    fn register(self, builder: crate::WorkerBuilder) -> crate::WorkerBuilder {
+        builder.push(Arc::new(SyncAdapter(Arc::new(self))))
+    }
 }
 
 pub(crate) trait ErasedWorkflow: Send + Sync + 'static {

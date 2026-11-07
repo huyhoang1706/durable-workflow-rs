@@ -1,7 +1,7 @@
 //! OpenTelemetry traces, metrics and logs for durable-workflow.
 //!
-//! The runtime emits live `tracing` spans and reports [`durable_core::Metric`]s
-//! to an [`Observer`](durable_core::Observer). This crate bridges both to
+//! The runtime emits live `tracing` spans and reports [`durable_spi::Metric`]s
+//! to an [`Observer`](durable_spi::Observer). This crate bridges both to
 //! OpenTelemetry:
 //!
 //! - [`layers`] builds OTLP exporters for the signals that have OTLP configured

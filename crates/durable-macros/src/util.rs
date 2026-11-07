@@ -58,19 +58,6 @@ pub fn typed(arg: &FnArg) -> syn::Result<(&PatType, Ident)> {
     }
 }
 
-/// `publish_video` to `PublishVideo`.
-pub fn pascal(name: &str) -> String {
-    name.trim_start_matches("r#")
-        .split('_')
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            let mut c = s.chars();
-            c.next()
-                .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
-        })
-        .collect()
-}
-
 /// Path used in generated code; override with `crate = "..."` on the attribute.
 pub fn default_crate() -> TokenStream {
     quote! { ::durable_workflow }
@@ -79,14 +66,6 @@ pub fn default_crate() -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pascal_cases_function_names() {
-        assert_eq!(pascal("publish_video"), "PublishVideo");
-        assert_eq!(pascal("onboarding"), "Onboarding");
-        assert_eq!(pascal("r#type_check"), "TypeCheck");
-        assert_eq!(pascal("a__b"), "AB");
-    }
 
     #[test]
     fn extracts_dep_and_result_types() {

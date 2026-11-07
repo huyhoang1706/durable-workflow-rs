@@ -9,8 +9,8 @@ use std::{
 };
 
 use common::*;
-use durable_core::{Clock, RunStatus};
 use durable_runtime::*;
+use durable_spi::{Clock, RunStatus};
 use serde_json::{Value, json};
 
 fn counter() -> Arc<AtomicUsize> {
@@ -23,8 +23,8 @@ async fn sync_workflow_runs_blocking_steps_to_success() {
     h.spawn(
         h.worker()
             .register_sync_fn("resize", |ctx: &WfSyncCtx, n: i64| {
-                let a: i64 = ctx.step("split", move || Ok::<_, StepError>(n * 2))?;
-                let b: i64 = ctx.step("merge", move || Ok::<_, StepError>(a + 1))?;
+                let a: i64 = ctx.step_blocking("split", move || Ok::<_, StepError>(n * 2))?;
+                let b: i64 = ctx.step_blocking("merge", move || Ok::<_, StepError>(a + 1))?;
                 Ok(b)
             }),
     );
@@ -41,7 +41,7 @@ async fn sync_step_bodies_run_once_across_a_suspend_and_resume() {
         h.worker()
             .register_sync_fn("memo", move |ctx: &WfSyncCtx, _: Value| {
                 let r = r.clone();
-                let a: i64 = ctx.step("a", move || {
+                let a: i64 = ctx.step_blocking("a", move || {
                     r.fetch_add(1, SeqCst);
                     Ok::<_, StepError>(1)
                 })?;
@@ -159,14 +159,18 @@ async fn sync_step_retries_with_the_given_policy() {
         h.worker()
             .inline_retry_threshold(Duration::from_secs(60))
             .register_sync_fn("retry", |ctx: &WfSyncCtx, _: Value| {
-                let v: u32 =
-                    ctx.step_with("flaky", RetryPolicy::fixed(4, Duration::ZERO), None, || {
+                let v: u32 = ctx.step_blocking_with(
+                    "flaky",
+                    RetryPolicy::fixed(4, Duration::ZERO),
+                    None,
+                    || {
                         let attempt = step::current().attempt();
                         if attempt < 3 {
                             return Err(StepError::retryable("not yet"));
                         }
                         Ok(attempt)
-                    })?;
+                    },
+                )?;
                 Ok(v)
             }),
     );
@@ -175,12 +179,12 @@ async fn sync_step_retries_with_the_given_policy() {
 }
 
 #[tokio::test]
-async fn step_async_runs_io_on_tokio_while_the_driver_thread_blocks() {
+async fn step_runs_io_on_tokio_while_the_driver_thread_blocks() {
     let mut h = Harness::new();
     h.spawn(
         h.worker()
             .register_sync_fn("io", |ctx: &WfSyncCtx, _: Value| {
-                let v: i64 = ctx.step_async("fetch", || async {
+                let v: i64 = ctx.step("fetch", async {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     Ok::<_, StepError>(5)
                 })?;
@@ -320,7 +324,7 @@ async fn cancelling_a_waiting_sync_run_and_a_running_blocking_step() {
             })
             .register_sync_fn("cpu", move |ctx: &WfSyncCtx, _: Value| {
                 let s = s.clone();
-                ctx.step("spin", move || {
+                ctx.step_blocking("spin", move || {
                     while !step::current().is_cancelled() {
                         std::thread::sleep(Duration::from_millis(5));
                     }

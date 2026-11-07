@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use durable_core::{
+use durable_spi::{
     Backend, ClaimLimits, Commit, ComputePool, EventKind, Lease, Metric, QueueScope, RunId,
     ThrottleLimit, WorkflowDefinition,
 };
@@ -20,9 +20,7 @@ use crate::{
     Deps, DepsBuilder, ThreadPool, WfAsyncCtx, WfSyncCtx, WorkflowError, WorkflowOptions, channels,
     engine::{self, EngineEnv, Outcome, notify_run},
     stream::{StreamLimits, close_run_streams},
-    workflow::{
-        AsyncAdapter, AsyncFn, AsyncWorkflow, ErasedWorkflow, SyncAdapter, SyncFn, SyncWorkflow,
-    },
+    workflow::{AsyncFn, ErasedWorkflow, IntoWorkflow, SyncFn},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -92,22 +90,15 @@ impl WorkerBuilder {
         self
     }
 
-    pub fn register<W: AsyncWorkflow>(mut self, w: W) -> Self {
-        self.workflows.push(Arc::new(AsyncAdapter(Arc::new(w))));
+    /// Register a workflow, async or sync. Pass the function annotated with `#[workflow]`, or a
+    /// struct implementing [`AsyncWorkflow`] / [`SyncWorkflow`] when it carries its own state.
+    pub fn register<M, W: IntoWorkflow<M>>(self, workflow: W) -> Self {
+        workflow.register(self)
+    }
+
+    pub(crate) fn push(mut self, w: Arc<dyn ErasedWorkflow>) -> Self {
+        self.workflows.push(w);
         self
-    }
-
-    pub fn register_default<W: AsyncWorkflow + Default>(self) -> Self {
-        self.register(W::default())
-    }
-
-    pub fn register_sync<W: SyncWorkflow>(mut self, w: W) -> Self {
-        self.workflows.push(Arc::new(SyncAdapter(Arc::new(w))));
-        self
-    }
-
-    pub fn register_sync_default<W: SyncWorkflow + Default>(self) -> Self {
-        self.register_sync(W::default())
     }
 
     pub fn register_fn<I, O, F, Fut>(self, name: &str, f: F) -> Self
@@ -571,7 +562,7 @@ async fn run_one(
         .catch_unwind()
         .await
         .unwrap_or_else(|p| {
-            Err(durable_core::Error::Backend(format!(
+            Err(durable_spi::Error::Backend(format!(
                 "execution panicked: {}",
                 crate::driver::panic_message(p)
             )))
@@ -583,7 +574,7 @@ async fn run_one(
         Ok(Outcome::Suspended { wake_at }) => queue.ack(&lease, wake_at, now).await,
         Ok(Outcome::Fault { retry_at }) => queue.nack(&lease, retry_at, now).await,
         Ok(Outcome::Abandoned) => Ok(()),
-        Err(durable_core::Error::Conflict) => Ok(()),
+        Err(durable_spi::Error::Conflict) => Ok(()),
         Err(e) => {
             tracing::error!(%run_id, "execution failed: {e}");
             queue
@@ -604,7 +595,7 @@ async fn run_one(
 }
 
 /// A run that keeps crashing workers is failed instead of crash-looping.
-async fn poison(sh: &Shared, run_id: RunId) -> durable_core::Result<Outcome> {
+async fn poison(sh: &Shared, run_id: RunId) -> durable_spi::Result<Outcome> {
     let store = &sh.backend.store;
     let Some(run) = store.get_run(run_id).await? else {
         return Ok(Outcome::Finished);

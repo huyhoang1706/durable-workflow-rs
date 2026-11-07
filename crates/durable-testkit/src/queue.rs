@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use durable_core::*;
+use durable_spi::*;
 use uuid::Uuid;
 
 use crate::{secs, t0};

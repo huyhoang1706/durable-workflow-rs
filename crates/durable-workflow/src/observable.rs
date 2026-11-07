@@ -38,7 +38,7 @@
 
 use std::{io, path::PathBuf, sync::Arc};
 
-use durable_core::{Error, Observer};
+use durable_spi::{Error, Observer};
 use tracing::Subscriber;
 use tracing_appender::{non_blocking::WorkerGuard, rolling};
 use tracing_subscriber::{

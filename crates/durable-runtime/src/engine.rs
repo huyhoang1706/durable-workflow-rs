@@ -16,11 +16,11 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use durable_core::{
+use durable_sm::{DecideInput, Decision};
+use durable_spi::{
     Backend, Commit, CommitOutcome, ComputePool, Error, Event, EventKind, HookReg, Metric, Result,
     Run, RunId, RunStatus, saturating_add,
 };
-use durable_sm::{DecideInput, Decision};
 use futures::StreamExt;
 use serde_json::{Value, json};
 use tokio::{sync::Notify, task::AbortHandle};
@@ -605,9 +605,7 @@ impl Exec<'_> {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<Value, StepError>>();
         match start {
             StepStart::Async(f) => {
-                let task = tokio::spawn(
-                    step::scope_async(info, async move { f().await }).instrument(span.clone()),
-                );
+                let task = tokio::spawn(step::scope_async(info, f).instrument(span.clone()));
                 aborts.push(task.abort_handle());
                 tokio::spawn(async move {
                     let r = match task.await {

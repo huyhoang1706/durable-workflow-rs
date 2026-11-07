@@ -8,7 +8,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use durable_core::{Cache, RunId};
+use durable_spi::{Cache, RunId};
 use serde::{Deserialize, Serialize};
 
 /// Safety net for a worker that dies without cleaning up.

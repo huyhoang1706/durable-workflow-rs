@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use durable_core::{Backend, Error};
+use durable_spi::{Backend, Error};
 
 #[derive(Clone)]
 pub struct BackendConfig {
@@ -123,9 +123,9 @@ impl BackendConfig {
 impl BackendConfig {
     /// Queue, pub/sub, cache and streams in this process.
     #[cfg(feature = "memory")]
-    fn with_memory_slots(&self, builder: durable_core::BackendBuilder) -> Result<Backend, Error> {
+    fn with_memory_slots(&self, builder: durable_spi::BackendBuilder) -> Result<Backend, Error> {
         let mut streams =
-            durable_memory::MemoryStreams::new(std::sync::Arc::new(durable_core::SystemClock));
+            durable_memory::MemoryStreams::new(std::sync::Arc::new(durable_spi::SystemClock));
         if let Some(ttl) = self.stream_ttl {
             streams = streams.ttl(ttl);
         }

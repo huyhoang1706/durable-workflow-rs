@@ -91,8 +91,5 @@ fn checksum(values: Vec<u64>) -> Result<u64, StepError> {
 
 #[tokio::main]
 async fn main() -> Result<(), durable_workflow::Error> {
-    run(Config::from_env()?, |worker| {
-        worker.register_sync_default::<Resize>()
-    })
-    .await
+    run(Config::from_env()?, |worker| worker.register(resize)).await
 }

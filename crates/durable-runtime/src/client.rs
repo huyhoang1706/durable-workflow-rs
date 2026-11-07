@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use durable_core::{
+use durable_spi::{
     Backend, CreateOutcome, Event, Metric, NewRun, QueueItem, RateDecision, Run, RunFilter, RunId,
     RunStatus, WorkflowDefinition, saturating_add,
 };
@@ -36,7 +36,7 @@ pub enum RunError {
     #[error("result does not match the requested type: {0}")]
     Decode(String),
     #[error(transparent)]
-    Backend(#[from] durable_core::Error),
+    Backend(#[from] durable_spi::Error),
 }
 
 #[derive(Clone)]
@@ -130,13 +130,13 @@ impl Client {
     }
 
     /// The run, if it exists in this client's namespace.
-    async fn scoped_run(&self, id: RunId) -> durable_core::Result<Run> {
+    async fn scoped_run(&self, id: RunId) -> durable_spi::Result<Run> {
         self.get_run(id)
             .await?
-            .ok_or_else(|| durable_core::Error::NotFound(format!("run {id}")))
+            .ok_or_else(|| durable_spi::Error::NotFound(format!("run {id}")))
     }
 
-    async fn enqueue(&self, items: Vec<QueueItem>) -> durable_core::Result<()> {
+    async fn enqueue(&self, items: Vec<QueueItem>) -> durable_spi::Result<()> {
         if items.is_empty() {
             return Ok(());
         }
@@ -160,7 +160,7 @@ impl Client {
         workflow: &str,
         input: Value,
         opts: StartOptions,
-    ) -> durable_core::Result<StartOutcome> {
+    ) -> durable_spi::Result<StartOutcome> {
         let span = tracing::info_span!(
             "workflow.start",
             otel.kind = "producer",
@@ -178,7 +178,7 @@ impl Client {
         workflow: &str,
         input: Value,
         opts: StartOptions,
-    ) -> durable_core::Result<StartOutcome> {
+    ) -> durable_spi::Result<StartOutcome> {
         let ns = self.backend.namespace.clone();
         let def = self
             .backend
@@ -242,14 +242,17 @@ impl Client {
         }
     }
 
-    pub async fn start<W: crate::AsyncWorkflow>(
+    /// Start a run of `workflow`, the function annotated with `#[workflow]`.
+    pub async fn start<M, W: crate::IntoWorkflow<M>>(
         &self,
+        _workflow: W,
         input: &impl serde::Serialize,
         opts: StartOptions,
-    ) -> durable_core::Result<StartOutcome> {
+    ) -> durable_spi::Result<StartOutcome> {
         let input = serde_json::to_value(input)
-            .map_err(|e| durable_core::Error::Config(format!("input is not serializable: {e}")))?;
-        self.start_raw(W::NAME, input, opts).await
+            .map_err(|e| durable_spi::Error::Config(format!("input is not serializable: {e}")))?;
+        self.start_raw(<W as crate::IntoWorkflow<M>>::NAME, input, opts)
+            .await
     }
 
     pub fn handle(&self, id: RunId) -> RunHandle {
@@ -259,7 +262,7 @@ impl Client {
         }
     }
 
-    pub async fn get_run(&self, id: RunId) -> durable_core::Result<Option<Run>> {
+    pub async fn get_run(&self, id: RunId) -> durable_spi::Result<Option<Run>> {
         let run = self.backend.store.get_run(id).await?;
         Ok(run.filter(|r| r.namespace == self.backend.namespace))
     }
@@ -272,19 +275,19 @@ impl Client {
         crate::inflight::read(cache, id).await
     }
 
-    pub async fn list_runs(&self, mut filter: RunFilter) -> durable_core::Result<Vec<Run>> {
+    pub async fn list_runs(&self, mut filter: RunFilter) -> durable_spi::Result<Vec<Run>> {
         filter
             .namespace
             .get_or_insert_with(|| self.backend.namespace.clone());
         self.backend.store.list_runs(filter).await
     }
 
-    pub async fn events(&self, id: RunId) -> durable_core::Result<Vec<Event>> {
+    pub async fn events(&self, id: RunId) -> durable_spi::Result<Vec<Event>> {
         self.scoped_run(id).await?;
         self.backend.store.load_events(id, 0).await
     }
 
-    pub async fn signal(&self, id: RunId, name: &str, payload: Value) -> durable_core::Result<()> {
+    pub async fn signal(&self, id: RunId, name: &str, payload: Value) -> durable_spi::Result<()> {
         let span = tracing::info_span!(
             "workflow.signal",
             otel.kind = "producer",
@@ -305,7 +308,7 @@ impl Client {
     }
 
     /// Webhook entry point: resolves the hook identified by `token`.
-    pub async fn resume_hook(&self, token: &str, payload: Value) -> durable_core::Result<()> {
+    pub async fn resume_hook(&self, token: &str, payload: Value) -> durable_spi::Result<()> {
         let span = tracing::info_span!("workflow.resume_hook", otel.kind = "producer");
         async {
             let item = self
@@ -320,7 +323,7 @@ impl Client {
     }
 
     /// Publish an event to every run waiting for it (matching by filter).
-    pub async fn send_event(&self, name: &str, data: Value) -> durable_core::Result<usize> {
+    pub async fn send_event(&self, name: &str, data: Value) -> durable_spi::Result<usize> {
         let span = tracing::info_span!(
             "workflow.send_event",
             otel.kind = "producer",
@@ -340,7 +343,7 @@ impl Client {
         .await
     }
 
-    pub async fn cancel(&self, id: RunId, reason: Option<String>) -> durable_core::Result<()> {
+    pub async fn cancel(&self, id: RunId, reason: Option<String>) -> durable_spi::Result<()> {
         let span =
             tracing::info_span!("workflow.cancel", otel.kind = "producer", durable.run_id = %id);
         async {
@@ -365,7 +368,7 @@ impl Client {
 
     /// Re-run a failed run from its failure point: succeeded steps stay
     /// memoized and failed steps get a fresh retry budget.
-    pub async fn retry(&self, id: RunId) -> durable_core::Result<()> {
+    pub async fn retry(&self, id: RunId) -> durable_spi::Result<()> {
         self.scoped_run(id).await?;
         let item = self.backend.store.retry_run(id, self.now()).await?;
         self.enqueue(vec![item]).await
@@ -406,7 +409,7 @@ impl Client {
 
     /// The run's user streams that have not expired. Empty when the backend
     /// has no stream store.
-    pub async fn streams(&self, id: RunId) -> durable_core::Result<Vec<durable_core::StreamInfo>> {
+    pub async fn streams(&self, id: RunId) -> durable_spi::Result<Vec<durable_spi::StreamInfo>> {
         self.scoped_run(id).await?;
         match &self.backend.streams {
             Some(store) => store.list(id).await,

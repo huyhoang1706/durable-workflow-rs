@@ -13,8 +13,8 @@ use std::{
 
 use async_trait::async_trait;
 use common::*;
-use durable_core::{Cache, EventKind, Result, RunStatus, far_future};
 use durable_runtime::*;
+use durable_spi::{Cache, EventKind, Result, RunStatus, far_future};
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -23,7 +23,7 @@ async fn huge_retry_after_suspends_instead_of_panicking() {
     h.spawn(
         h.worker()
             .register_fn("rate_limited", |ctx: WfAsyncCtx, _: Value| async move {
-                ctx.step("call", || async {
+                ctx.step("call", async {
                     // What a hostile `Retry-After: 10000000000000` header becomes.
                     Err::<(), _>(StepError::retry_after(
                         Duration::from_secs(10_000_000_000_000),
@@ -105,11 +105,10 @@ async fn a_step_name_that_collides_with_a_generated_key_faults_the_run() {
             .register_fn("collide", |ctx: WfAsyncCtx, _: Value| async move {
                 // The second `a` is keyed `a#1`: before the fix it took over the
                 // explicit `a#1` step and both resolved to "second a".
-                let explicit = ctx.step("a#1", || async {
-                    Ok::<_, StepError>("explicit".to_string())
-                });
-                let first = ctx.step("a", || async { Ok::<_, StepError>("first a".to_string()) });
-                let second = ctx.step("a", || async { Ok::<_, StepError>("second a".to_string()) });
+                let explicit =
+                    ctx.step("a#1", async { Ok::<_, StepError>("explicit".to_string()) });
+                let first = ctx.step("a", async { Ok::<_, StepError>("first a".to_string()) });
+                let second = ctx.step("a", async { Ok::<_, StepError>("second a".to_string()) });
                 let (x, y, z): (String, String, String) =
                     futures::try_join!(explicit, first, second)?;
                 Ok(json!([x, y, z]))

@@ -15,7 +15,7 @@ static GATE_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 struct Env {
     app: Router,
-    backend: durable_core::Backend,
+    backend: durable_spi::Backend,
     client: Client,
     worker: WorkerHandle,
 }
@@ -26,9 +26,7 @@ async fn env() -> Env {
         .poll_interval(Duration::from_millis(20))
         .drain_timeout(Duration::from_millis(200))
         .register_fn("echo", |ctx: WfAsyncCtx, v: Value| async move {
-            let out: Value = ctx
-                .step("s", move || async move { Ok::<_, StepError>(v) })
-                .await?;
+            let out: Value = ctx.step("s", async move { Ok::<_, StepError>(v) }).await?;
             Ok(out)
         })
         .register_fn("approve", |ctx: WfAsyncCtx, _: Value| async move {
@@ -50,7 +48,7 @@ async fn env() -> Env {
             Err::<(), _>(WorkflowError::failed("nope"))
         })
         .register_fn("gated", |ctx: WfAsyncCtx, _: Value| async move {
-            ctx.step("work", || async {
+            ctx.step("work", async {
                 while !GATE_OPEN.load(std::sync::atomic::Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
@@ -63,7 +61,7 @@ async fn env() -> Env {
             "streamer",
             |ctx: WfAsyncCtx, words: Vec<String>| async move {
                 let text: String = ctx
-                    .step("gen", move || async move {
+                    .step("gen", async move {
                         let w = durable_runtime::step::current().stream::<String>("tokens");
                         for word in &words {
                             w.write(word)?;

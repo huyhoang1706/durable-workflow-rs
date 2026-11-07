@@ -14,9 +14,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use durable_core::{Event, RunId};
 use durable_sm::{Abort, Handle, Replayer, StepFailure};
 pub(crate) use durable_sm::{Advance, Command, Pending, Resolution};
+use durable_spi::{Event, RunId};
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -26,8 +26,8 @@ use crate::{Deps, ErrorClass, StepError, WorkflowError};
 pub(crate) type StepFut = BoxFuture<'static, Result<Value, StepError>>;
 
 pub(crate) enum StepStart {
-    /// Runs on tokio.
-    Async(Box<dyn FnOnce() -> StepFut + Send>),
+    /// Runs on tokio. A future is lazy, so a replayed step drops it unpolled.
+    Async(StepFut),
     /// Runs on the compute pool.
     Blocking(Box<dyn FnOnce() -> Result<Value, StepError> + Send>),
 }

@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use durable_core::{Backend, Error, Metric, NewChunk, Observer, PubSub, RunId, StreamStore};
+use durable_spi::{Backend, Error, Metric, NewChunk, Observer, PubSub, RunId, StreamStore};
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -261,7 +261,7 @@ impl StreamHub {
             run_id: RunId::nil(),
             store: None,
             pubsub: Arc::new(NullPubSub),
-            observer: Arc::new(durable_core::NoopObserver),
+            observer: Arc::new(durable_spi::NoopObserver),
             handle: None,
             limits: StreamLimits {
                 flush_interval: Duration::from_millis(25),
@@ -502,20 +502,20 @@ struct NullPubSub;
 #[cfg(test)]
 #[async_trait::async_trait]
 impl PubSub for NullPubSub {
-    async fn publish(&self, _: &str, _: Vec<u8>) -> durable_core::Result<()> {
+    async fn publish(&self, _: &str, _: Vec<u8>) -> durable_spi::Result<()> {
         Ok(())
     }
     async fn subscribe(
         &self,
         _: &str,
-    ) -> durable_core::Result<futures::stream::BoxStream<'static, Vec<u8>>> {
+    ) -> durable_spi::Result<futures::stream::BoxStream<'static, Vec<u8>>> {
         Ok(futures::stream::empty().boxed())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use durable_core::{ChunkBody, StreamChunk, StreamCursor, StreamInfo};
+    use durable_spi::{ChunkBody, StreamChunk, StreamCursor, StreamInfo};
     use tokio::sync::watch;
 
     use serde_json::Value;
@@ -552,7 +552,7 @@ mod tests {
             _: RunId,
             _: &str,
             chunks: Vec<NewChunk>,
-        ) -> durable_core::Result<StreamCursor> {
+        ) -> durable_spi::Result<StreamCursor> {
             let mut open = self.open.subscribe();
             let _ = open.wait_for(|o| *o).await;
             self.batches.lock().push(chunks);
@@ -564,16 +564,16 @@ mod tests {
             _: &str,
             _: Option<&StreamCursor>,
             _: usize,
-        ) -> durable_core::Result<Vec<StreamChunk>> {
+        ) -> durable_spi::Result<Vec<StreamChunk>> {
             Ok(vec![])
         }
-        async fn info(&self, _: RunId, _: &str) -> durable_core::Result<Option<StreamInfo>> {
+        async fn info(&self, _: RunId, _: &str) -> durable_spi::Result<Option<StreamInfo>> {
             Ok(None)
         }
-        async fn list(&self, _: RunId) -> durable_core::Result<Vec<StreamInfo>> {
+        async fn list(&self, _: RunId) -> durable_spi::Result<Vec<StreamInfo>> {
             Ok(vec![])
         }
-        async fn close_all(&self, _: RunId) -> durable_core::Result<()> {
+        async fn close_all(&self, _: RunId) -> durable_spi::Result<()> {
             Ok(())
         }
     }
@@ -589,7 +589,7 @@ mod tests {
             },
             run_id: RunId::nil(),
             pubsub: Arc::new(NullPubSub),
-            observer: Arc::new(durable_core::NoopObserver),
+            observer: Arc::new(durable_spi::NoopObserver),
             warned: Arc::default(),
             channels: Mutex::default(),
             touched: Mutex::default(),

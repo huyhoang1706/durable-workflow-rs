@@ -6,7 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use durable_core::{
+use durable_spi::{
     ChunkBody, Clock, Error, NewChunk, Result, RunId, StreamChunk, StreamCursor, StreamInfo,
     StreamStore, saturating_add,
 };

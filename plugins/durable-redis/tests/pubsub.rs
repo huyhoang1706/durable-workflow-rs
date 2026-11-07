@@ -5,8 +5,8 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use durable_core::PubSub;
 use durable_redis::RedisPubSub;
+use durable_spi::PubSub;
 use futures::StreamExt;
 
 /// Both tests inspect or kill every pub/sub connection on the server.

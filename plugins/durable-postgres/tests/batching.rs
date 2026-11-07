@@ -5,8 +5,8 @@
 mod common;
 
 use chrono::{DateTime, Utc};
-use durable_core::*;
 use durable_postgres::PostgresStore;
+use durable_spi::*;
 use durable_testkit::{store::new_run, t0};
 use serde_json::json;
 use sqlx::{AssertSqlSafe, PgPool, Row};
