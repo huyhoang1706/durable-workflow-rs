@@ -48,7 +48,7 @@ async fn run_spans_and_step_logs_join_on_the_run_id() {
         .poll_interval(Duration::from_millis(20))
         .register_fn("greet", |ctx: WfAsyncCtx, name: String| async move {
             let msg: String = ctx
-                .step("compose", move || async move {
+                .step("compose", async move {
                     tracing::info!(who = %name, "composing a greeting");
                     Ok::<_, StepError>(format!("hello {name}"))
                 })

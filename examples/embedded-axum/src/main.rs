@@ -74,7 +74,7 @@ async fn signup(
 ) -> (StatusCode, Json<Value>) {
     let opts =
         durable_workflow::StartOptions::default().idempotency_key(format!("signup:{}", body.email));
-    match client.start::<Onboarding>(&body, opts).await {
+    match client.start(onboarding, &body, opts).await {
         Ok(StartOutcome::Started(h)) => (StatusCode::CREATED, Json(json!({"run_id": h.id()}))),
         Ok(StartOutcome::Existing(h)) => (StatusCode::OK, Json(json!({"run_id": h.id()}))),
         Ok(StartOutcome::RateLimited { retry_at }) => (
@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let worker = Worker::builder(backend.clone())
         .dep::<dyn Mailer>(Arc::new(LogMailer))
-        .register_default::<Onboarding>()
+        .register(onboarding)
         .build()?
         .spawn();
 

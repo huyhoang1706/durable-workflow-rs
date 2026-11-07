@@ -24,7 +24,7 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 redis = { version = "1.7", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
 
-durable-core = { path = "crates/durable-core" }
+durable-spi = { path = "crates/durable-spi" }
 durable-sm = { path = "crates/durable-sm" }
 durable-runtime = { path = "crates/durable-runtime" }
 durable-testkit = { path = "crates/durable-testkit" }

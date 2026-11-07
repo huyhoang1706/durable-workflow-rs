@@ -10,7 +10,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use durable_core::WaitKind;
+use durable_spi::WaitKind;
 use futures::future::BoxFuture;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -52,15 +52,18 @@ impl WfAsyncCtx {
     }
 
     /// An async step: runs on tokio, memoized by `name` (+ occurrence).
-    pub fn step<T, E, F, Fut>(&self, name: &str, f: F) -> StepBuilder<T>
+    ///
+    /// Pass an `async move { .. }` block or the call of an `async fn`. The future is lazy: on
+    /// replay it is dropped unpolled. Arguments of an `async fn` call are still evaluated every
+    /// time, so keep them deterministic like the rest of the workflow body.
+    pub fn step<T, E, Fut>(&self, name: &str, fut: Fut) -> StepBuilder<T>
     where
         T: Serialize + DeserializeOwned + Send + 'static,
         E: Into<StepError>,
-        F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
-        let start = StepStart::Async(Box::new(move || {
-            Box::pin(async move { f().await.map_err(Into::into).and_then(encode_step) })
+        let start = StepStart::Async(Box::pin(async move {
+            fut.await.map_err(Into::into).and_then(encode_step)
         }));
         StepBuilder::new(self.core.clone(), self.core.user_key(name), start)
     }
@@ -489,7 +492,7 @@ impl WfSyncCtx {
     }
 
     /// A blocking step on the compute pool.
-    pub fn step<T, E, F>(&self, name: &str, f: F) -> Result<T, WorkflowError>
+    pub fn step_blocking<T, E, F>(&self, name: &str, f: F) -> Result<T, WorkflowError>
     where
         T: Serialize + DeserializeOwned + Send + 'static,
         E: Into<StepError>,
@@ -498,8 +501,8 @@ impl WfSyncCtx {
         self.block(self.inner.step_blocking(name, f).into_future())
     }
 
-    /// As `step`, with retry and timeout settings.
-    pub fn step_with<T, E, F>(
+    /// As `step_blocking`, with retry and timeout settings.
+    pub fn step_blocking_with<T, E, F>(
         &self,
         name: &str,
         policy: RetryPolicy,
@@ -519,14 +522,13 @@ impl WfSyncCtx {
     }
 
     /// An async step on tokio; this thread blocks until it finishes.
-    pub fn step_async<T, E, F, Fut>(&self, name: &str, f: F) -> Result<T, WorkflowError>
+    pub fn step<T, E, Fut>(&self, name: &str, fut: Fut) -> Result<T, WorkflowError>
     where
         T: Serialize + DeserializeOwned + Send + 'static,
         E: Into<StepError>,
-        F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
-        self.block(self.inner.step(name, f).into_future())
+        self.block(self.inner.step(name, fut).into_future())
     }
 
     /// Parallel fan-out on the compute pool, memoized per item.

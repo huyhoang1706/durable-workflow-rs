@@ -41,7 +41,7 @@ async fn ctx_dep_lookup_inside_steps_async_and_sync() {
             .dep::<dyn Mailer>(mailer.clone())
             .register_fn("a", |ctx: WfAsyncCtx, to: String| async move {
                 let m = ctx.dep::<dyn Mailer>()?;
-                ctx.step("send", move || async move {
+                ctx.step("send", async move {
                     m.send(&to, step::current().idempotency_key());
                     Ok::<_, StepError>(())
                 })
@@ -50,7 +50,7 @@ async fn ctx_dep_lookup_inside_steps_async_and_sync() {
             })
             .register_sync_fn("s", |ctx: &WfSyncCtx, to: String| {
                 let m = ctx.dep::<dyn Mailer>()?;
-                ctx.step("send", move || {
+                ctx.step_blocking("send", move || {
                     m.send(&to, step::current().idempotency_key());
                     Ok::<_, StepError>(())
                 })?;
@@ -84,7 +84,7 @@ impl AsyncWorkflow for Invoice {
 
     async fn run(self: Arc<Self>, ctx: WfAsyncCtx, id: i64) -> Result<String, WorkflowError> {
         let n: i64 = ctx
-            .step("charge", move || async move { Ok::<_, StepError>(id * 10) })
+            .step("charge", async move { Ok::<_, StepError>(id * 10) })
             .await?;
         Ok(format!("{}{n}", self.prefix))
     }
@@ -100,7 +100,7 @@ impl SyncWorkflow for SyncInvoice {
     type Output = String;
 
     fn run(self: Arc<Self>, ctx: &WfSyncCtx, id: i64) -> Result<String, WorkflowError> {
-        let n: i64 = ctx.step("charge", move || Ok::<_, StepError>(id * 10))?;
+        let n: i64 = ctx.step_blocking("charge", move || Ok::<_, StepError>(id * 10))?;
         Ok(format!("{}{n}", self.prefix))
     }
 }
@@ -113,7 +113,7 @@ async fn constructor_injection_through_struct_fields() {
             .register(Invoice {
                 prefix: "inv-".into(),
             })
-            .register_sync(SyncInvoice {
+            .register(SyncInvoice {
                 prefix: "sinv-".into(),
             }),
     );
@@ -242,7 +242,7 @@ async fn replays_do_not_resend_but_a_crash_before_commit_does() {
         "replayed",
         |ctx: WfAsyncCtx, _: Value| async move {
             let mailer = ctx.dep::<dyn Mailer>()?;
-            ctx.step("send", move || async move {
+            ctx.step("send", async move {
                 mailer.send("a", "k");
                 Ok::<_, StepError>(())
             })
@@ -272,7 +272,7 @@ async fn replays_do_not_resend_but_a_crash_before_commit_does() {
                 let inv = inv.clone();
                 async move {
                     let mailer = ctx.dep::<dyn Mailer>()?;
-                    ctx.step("send", move || async move {
+                    ctx.step("send", async move {
                         mailer.send("b", "k2");
                         if inv.fetch_add(1, SeqCst) == 0 {
                             // The worker dies before the result is committed.
@@ -301,7 +301,7 @@ async fn replays_do_not_resend_but_a_crash_before_commit_does() {
                     let inv = inv.clone();
                     async move {
                         let mailer = ctx.dep::<dyn Mailer>()?;
-                        ctx.step("send", move || async move {
+                        ctx.step("send", async move {
                             mailer.send("b", "k2");
                             inv.fetch_add(1, SeqCst);
                             Ok::<_, StepError>(())

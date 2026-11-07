@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use durable_core::*;
+use durable_spi::*;
 use parking_lot::Mutex;
 use serde_json::Value;
 use uuid::Uuid;

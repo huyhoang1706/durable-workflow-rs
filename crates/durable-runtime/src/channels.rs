@@ -1,4 +1,4 @@
-use durable_core::{PubSub, RunId};
+use durable_spi::{PubSub, RunId};
 
 /// Publish a notice that readers also poll for, so a lost one only delays
 /// them. Failures are logged at debug level rather than dropped silently.

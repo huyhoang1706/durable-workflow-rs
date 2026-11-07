@@ -11,7 +11,7 @@ cargo test -p durable-workflow --test compile_fail           # trybuild UI tests
 docker compose up -d                      # postgres:17 + redis:7 for the examples
 ```
 
-Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-core`, `durable-runtime`, `durable-memory` and `durable-macros`.
+Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-spi`, `durable-runtime`, `durable-memory` and `durable-macros`.
 
 ## Conventions
 

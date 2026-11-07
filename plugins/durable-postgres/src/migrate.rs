@@ -1,4 +1,4 @@
-use durable_core::{Error, Result};
+use durable_spi::{Error, Result};
 use sqlx::PgPool;
 
 use crate::sql::{q, q_scalar, raw};

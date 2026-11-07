@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use durable_core::Observer;
+use durable_spi::Observer;
 use opentelemetry::{KeyValue, global, trace::TracerProvider};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{Protocol as OtlpProtocol, WithExportConfig};

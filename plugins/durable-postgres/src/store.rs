@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use durable_core::*;
+use durable_spi::*;
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction, postgres::PgRow};
 use uuid::Uuid;

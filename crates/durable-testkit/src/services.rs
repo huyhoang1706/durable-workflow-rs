@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use durable_core::*;
+use durable_spi::*;
 use futures::StreamExt;
 
 use crate::{secs, t0};

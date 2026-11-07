@@ -50,18 +50,18 @@ static FAILED_ONCE: AtomicBool = AtomicBool::new(false);
 async fn chat(ctx: WfAsyncCtx, prompt: String) -> Result<String, WorkflowError> {
     // The step's return value is the durable answer. Everything written to the
     // stream while it runs is a live preview of it.
-    let text: String = ctx
-        .step("generate", move || async move {
-            let writer = step::current().stream::<String>("tokens");
-            let (tokens, failure) = generator(&prompt);
-            let parts = writer.forward(tokens).await?;
-            if let Some(err) = failure.lock().unwrap().take() {
-                return Err(StepError::retryable(err));
-            }
-            Ok::<_, StepError>(parts.concat())
-        })
-        .await?;
-    Ok(text)
+    generate(&ctx, prompt).await
+}
+
+#[step]
+async fn generate(prompt: String) -> Result<String, StepError> {
+    let writer = step::current().stream::<String>("tokens");
+    let (tokens, failure) = generator(&prompt);
+    let parts = writer.forward(tokens).await?;
+    if let Some(err) = failure.lock().unwrap().take() {
+        return Err(StepError::retryable(err));
+    }
+    Ok(parts.concat())
 }
 
 type Failure = std::sync::Arc<std::sync::Mutex<Option<String>>>;

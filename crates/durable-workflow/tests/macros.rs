@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use durable_core::WorkflowDefinition;
+use durable_spi::WorkflowDefinition;
 use durable_testkit::{ManualClock, t0};
 use durable_workflow::{
     AsyncWorkflow, Client, Dep, StepError, SyncWorkflow, WfAsyncCtx, WfSyncCtx, Worker,
@@ -50,7 +50,7 @@ async fn onboarding(
 ) -> Result<String, WorkflowError> {
     let greeting = format!("{} {}", cfg.greeting, user.name); // pure dep in the body
     let to = user.name.clone();
-    ctx.step("send-welcome", move || async move {
+    ctx.step("send-welcome", async move {
         mailer.send(&to);
         Ok::<_, StepError>(())
     })
@@ -111,9 +111,10 @@ fn worker_with_deps(
 #[tokio::test]
 async fn async_workflow_with_injected_deps_and_a_step_fn() {
     let (w, mailer, slack, client) = worker_with_deps(ManualClock::new(t0()));
-    let handle = w.register_default::<Onboarding>().build().unwrap().spawn();
+    let handle = w.register(onboarding).build().unwrap().spawn();
     let out = client
-        .start::<Onboarding>(
+        .start(
+            onboarding,
             &Signup {
                 id: 9,
                 name: "ann".into(),
@@ -136,7 +137,7 @@ async fn async_workflow_with_injected_deps_and_a_step_fn() {
 #[tokio::test]
 async fn sync_workflow_with_injected_deps_and_a_sync_step_fn() {
     let (w, _, _, client) = worker_with_deps(ManualClock::new(t0()));
-    let handle = w.register_sync_default::<Resize>().build().unwrap().spawn();
+    let handle = w.register(resize).build().unwrap().spawn();
     let out = client
         .start_raw(
             "images.resize",
@@ -157,7 +158,7 @@ async fn sync_workflow_with_injected_deps_and_a_sync_step_fn() {
 #[tokio::test]
 async fn workflow_without_an_input_argument() {
     let (w, _, _, client) = worker_with_deps(ManualClock::new(t0()));
-    let handle = w.register_default::<NoInput>().build().unwrap().spawn();
+    let handle = w.register(no_input).build().unwrap().spawn();
     let out = client
         .start_raw("no.input", json!(null), Default::default())
         .await
@@ -173,16 +174,16 @@ async fn workflow_without_an_input_argument() {
 
 #[test]
 fn macro_records_names_options_and_required_deps() {
-    assert_eq!(Onboarding::NAME, "user.onboarding");
-    assert_eq!(Resize::NAME, "images.resize");
-    let o = Onboarding::options().definition(Onboarding::NAME);
+    assert_eq!(onboarding::NAME, "user.onboarding");
+    assert_eq!(resize::NAME, "images.resize");
+    let o = onboarding::options().definition(onboarding::NAME);
     let expected = WorkflowDefinition {
         name: "user.onboarding".into(),
-        concurrency: Some(durable_core::ConcurrencySpec {
+        concurrency: Some(durable_spi::ConcurrencySpec {
             limit: 4,
             key: Some("/id".into()),
         }),
-        throttle: Some(durable_core::ThrottleSpec {
+        throttle: Some(durable_spi::ThrottleSpec {
             limit: 100,
             period_secs: 60,
             burst: 1,
@@ -192,12 +193,12 @@ fn macro_records_names_options_and_required_deps() {
         timeout_secs: Some(3600),
     };
     assert_eq!(o, expected);
-    let names: Vec<_> = Onboarding::required_deps().iter().map(|d| d.name).collect();
+    let names: Vec<_> = onboarding::required_deps().iter().map(|d| d.name).collect();
     assert_eq!(names.len(), 2);
     assert!(
         names.iter().any(|n| n.contains("Mailer")) && names.iter().any(|n| n.contains("AppConfig"))
     );
-    let _ = <Resize as SyncWorkflow>::required_deps();
+    let _ = <resize as SyncWorkflow>::required_deps();
 }
 
 #[test]
@@ -207,7 +208,7 @@ fn build_rejects_a_workflow_whose_macro_declared_dep_is_missing() {
         .dep_pure(Arc::new(AppConfig {
             greeting: "x".into(),
         }))
-        .register_default::<Onboarding>()
+        .register(onboarding)
         .build()
         .err()
         .expect("Mailer is not registered");

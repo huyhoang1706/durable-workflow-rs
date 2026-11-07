@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use durable_core::{Queue, Store};
 use durable_memory::{MemoryQueue, MemoryStore};
+use durable_spi::{Queue, Store};
 
 async fn make_store() -> Arc<dyn Store> {
     Arc::new(MemoryStore::new())
@@ -14,8 +14,8 @@ async fn make_queue() -> Arc<dyn Queue> {
 durable_testkit::store_conformance!(make_store());
 durable_testkit::queue_conformance!(make_queue());
 
-use durable_core::{Cache, PubSub, RateLimiter};
 use durable_memory::{MemoryCache, MemoryPubSub, MemoryRateLimiter};
+use durable_spi::{Cache, PubSub, RateLimiter};
 
 async fn make_cache() -> Arc<dyn Cache> {
     Arc::new(MemoryCache::new())
@@ -33,8 +33,8 @@ durable_testkit::cache_conformance!(make_cache());
 durable_testkit::pubsub_conformance!(make_pubsub());
 durable_testkit::rate_limiter_conformance!(make_limiter());
 
-use durable_core::StreamStore;
 use durable_memory::MemoryStreams;
+use durable_spi::StreamStore;
 use durable_testkit::{ManualClock, t0};
 
 async fn make_streams(ttl: std::time::Duration) -> durable_testkit::streams::StreamHarness {

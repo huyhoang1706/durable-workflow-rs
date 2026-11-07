@@ -2,8 +2,8 @@
 
 mod common;
 
-use durable_core::{ChunkBody, NewChunk, StreamStore};
 use durable_redis::RedisStreams;
+use durable_spi::{ChunkBody, NewChunk, StreamStore};
 use redis::AsyncCommands;
 use serde_json::json;
 use std::time::Duration;
@@ -99,12 +99,12 @@ async fn a_malformed_cursor_is_rejected() {
         .read(
             run(),
             "t",
-            Some(&durable_core::StreamCursor("nope".into())),
+            Some(&durable_spi::StreamCursor("nope".into())),
             10,
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, durable_core::Error::Config(_)), "{err:?}");
+    assert!(matches!(err, durable_spi::Error::Config(_)), "{err:?}");
 }
 
 #[tokio::test]

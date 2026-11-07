@@ -1,10 +1,10 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Ident, ItemFn, Meta, Type, spanned::Spanned};
+use syn::{ItemFn, Meta, Type, spanned::Spanned};
 
 use crate::{
     args::{self, duration_expr, lit_str, lit_u32},
-    util::{self, dep_inner, pascal, result_ok, typed},
+    util::{self, dep_inner, result_ok, typed},
 };
 
 struct Args {
@@ -145,7 +145,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let vis = &f.vis;
     let fn_name = &f.sig.ident;
-    let struct_name = Ident::new(&pascal(&fn_name.to_string()), fn_name.span());
+    // Like actix-web handlers, the generated unit struct takes the function's name, so
+    // `worker.register(my_workflow)` names the function the developer wrote.
+    let struct_name = fn_name;
     let inner_name = format_ident!("__durable_{}", fn_name);
     let mut inner = f.clone();
     inner.sig.ident = inner_name.clone();
@@ -214,6 +216,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #inner
 
         #(#doc_attrs)*
+        #[allow(non_camel_case_types)]
         #[derive(Debug, Default, Clone, Copy)]
         #vis struct #struct_name;
 

@@ -5,9 +5,9 @@
 //! opt-in: `observable` (local JSON logs and spans, no extra services) and
 //! `otel` (OpenTelemetry over OTLP).
 
-pub use durable_core as core;
-pub use durable_core::{Backend, Clock, Error, Run, RunFilter, RunId, RunStatus};
 pub use durable_runtime::*;
+pub use durable_spi as core;
+pub use durable_spi::{Backend, Clock, Error, Run, RunFilter, RunId, RunStatus};
 
 #[cfg(feature = "memory")]
 pub use durable_memory as memory;

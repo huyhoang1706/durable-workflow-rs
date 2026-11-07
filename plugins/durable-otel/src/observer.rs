@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use durable_core::{Metric, Observer, TraceCarrier, WorkKind};
+use durable_spi::{Metric, Observer, TraceCarrier, WorkKind};
 use opentelemetry::{
     KeyValue,
     metrics::{Counter, Histogram, Meter, MeterProvider, ObservableGauge, noop::NoopMeterProvider},

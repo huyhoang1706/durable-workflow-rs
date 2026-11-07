@@ -10,7 +10,7 @@ description = "OpenTelemetry traces, metrics and logs for durable-workflow."
 testing = ["opentelemetry_sdk/testing"]
 
 [dependencies]
-durable-core.workspace = true
+durable-spi.workspace = true
 opentelemetry = "0.33"
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio", "spec_unstable_metrics_views"] }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"] }

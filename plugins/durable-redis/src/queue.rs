@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use durable_core::*;
+use durable_spi::*;
 use redis::{Script, aio::ConnectionManager};
 use serde::Deserialize;
 use serde_json::Value;

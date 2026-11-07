@@ -7,7 +7,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), durable_workflow::Error> {
 //!     durable_workflow::standalone::run(Config::from_env()?, |worker| {
-//!         worker.dep(mailer()).register_default::<Onboarding>()
+//!         worker.dep(mailer()).register(onboarding)
 //!     })
 //!     .await
 //! }
@@ -16,8 +16,8 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 
 use axum::{Router, routing::get};
-use durable_core::{Backend, Error};
 use durable_runtime::{Client, Worker, WorkerBuilder};
+use durable_spi::{Backend, Error};
 use tokio::net::TcpListener;
 
 use crate::{
@@ -217,7 +217,7 @@ where
 
 async fn readyz(client: Client) -> (axum::http::StatusCode, String) {
     match client
-        .list_runs(durable_core::RunFilter {
+        .list_runs(durable_spi::RunFilter {
             limit: Some(1),
             ..Default::default()
         })

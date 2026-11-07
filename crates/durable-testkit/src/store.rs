@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use durable_core::*;
+use durable_spi::*;
 use serde_json::{Value, json};
 
 use crate::{secs, t0};

@@ -41,7 +41,7 @@ fn configure(b: WorkerBuilder) -> WorkerBuilder {
         "double",
         |ctx: WfAsyncCtx, n: i64| async move {
             let v: i64 = ctx
-                .step("d", move || async move { Ok::<_, StepError>(n * 2) })
+                .step("d", async move { Ok::<_, StepError>(n * 2) })
                 .await?;
             Ok(v)
         },

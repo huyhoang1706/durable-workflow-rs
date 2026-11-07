@@ -12,7 +12,7 @@ sqlx = ["dep:sqlx"]
 [dependencies]
 reqwest = { version = "0.13", default-features = false, optional = true }
 sqlx = { workspace = true, optional = true }
-durable-core.workspace = true
+durable-spi.workspace = true
 durable-sm.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

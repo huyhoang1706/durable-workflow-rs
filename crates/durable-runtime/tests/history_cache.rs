@@ -11,8 +11,8 @@ use std::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use common::*;
-use durable_core::*;
 use durable_runtime::*;
+use durable_spi::*;
 use serde_json::{Value, json};
 
 /// Delegates to a real store and counts `load_events` calls.
@@ -120,7 +120,7 @@ fn sleeper(h: &Harness, runs: Arc<AtomicUsize>) -> WorkerBuilder {
             let runs = runs.clone();
             async move {
                 let a: i64 = ctx
-                    .step("a", move || async move {
+                    .step("a", async move {
                         runs.fetch_add(1, SeqCst);
                         Ok::<_, StepError>(1)
                     })

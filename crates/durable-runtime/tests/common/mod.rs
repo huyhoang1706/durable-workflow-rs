@@ -6,8 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use durable_core::{Backend, Run, RunId, RunStatus};
 use durable_runtime::{Client, StartOptions, Worker, WorkerBuilder, WorkerHandle};
+use durable_spi::{Backend, Run, RunId, RunStatus};
 use durable_testkit::{ManualClock, t0};
 use serde_json::{Value, json};
 

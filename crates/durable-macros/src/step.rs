@@ -68,7 +68,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 #(#plain),*
             ) -> ::core::result::Result<#ok_ty, #krate::WorkflowError> {
                 #(#resolve)*
-                ctx.step(#step_name, move || async move {
+                ctx.step(#step_name, async move {
                     let __out: #ret_ty = (async move #block).await;
                     __out
                 })
@@ -95,7 +95,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     let __out: #ret_ty = (move || #block)();
                     __out
                 };
-                ctx.step_with(#step_name, #policy, #timeout, #closure)
+                ctx.step_blocking_with(#step_name, #policy, #timeout, #closure)
             }
         }
     };

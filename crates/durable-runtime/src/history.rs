@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use durable_core::{Event, EventKind};
+use durable_spi::{Event, EventKind};
 
 /// Prepare a stored log for replay.
 ///
@@ -38,7 +38,7 @@ pub fn normalize(events: Vec<Event>) -> Vec<Event> {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use durable_core::EventKind::{self, *};
+    use durable_spi::EventKind::{self, *};
     use serde_json::json;
 
     use super::*;

@@ -9,8 +9,8 @@ use std::{
 };
 
 use common::*;
-use durable_core::{Clock, EventKind, RunStatus};
 use durable_runtime::*;
+use durable_spi::{Clock, EventKind, RunStatus};
 use serde_json::{Value, json};
 
 fn counter() -> Arc<AtomicUsize> {
@@ -24,10 +24,10 @@ async fn runs_a_workflow_with_steps_to_success() {
         h.worker()
             .register_fn("add", |ctx: WfAsyncCtx, n: i64| async move {
                 let a: i64 = ctx
-                    .step("double", move || async move { Ok::<_, StepError>(n * 2) })
+                    .step("double", async move { Ok::<_, StepError>(n * 2) })
                     .await?;
                 let b: i64 = ctx
-                    .step("inc", move || async move { Ok::<_, StepError>(a + 1) })
+                    .step("inc", async move { Ok::<_, StepError>(a + 1) })
                     .await?;
                 Ok(b)
             }),
@@ -58,14 +58,14 @@ async fn step_bodies_run_once_across_a_suspend_and_resume() {
                 let (ac, bc) = (ac.clone(), bc.clone());
                 async move {
                     let a: i64 = ctx
-                        .step("a", move || async move {
+                        .step("a", async move {
                             ac.fetch_add(1, SeqCst);
                             Ok::<_, StepError>(1)
                         })
                         .await?;
                     ctx.sleep("nap", Duration::from_secs(3600)).await?;
                     let b: i64 = ctx
-                        .step("b", move || async move {
+                        .step("b", async move {
                             bc.fetch_add(1, SeqCst);
                             Ok::<_, StepError>(a + 1)
                         })
@@ -92,7 +92,7 @@ async fn parallel_steps_run_concurrently() {
         h.worker()
             .register_fn("par", |ctx: WfAsyncCtx, _: Value| async move {
                 let slow = |name: &'static str, v: i64| {
-                    ctx.step(name, move || async move {
+                    ctx.step(name, async move {
                         tokio::time::sleep(Duration::from_millis(300)).await;
                         Ok::<_, StepError>(v)
                     })
@@ -122,7 +122,7 @@ async fn failing_step_is_retried_and_attempt_is_visible() {
                 let a = a.clone();
                 async move {
                     let seen: u32 = ctx
-                        .step("flaky", move || async move {
+                        .step("flaky", async move {
                             a.fetch_add(1, SeqCst);
                             let attempt = step::current().attempt();
                             if attempt < 3 {
@@ -156,7 +156,7 @@ async fn long_backoff_suspends_the_run_instead_of_holding_a_worker() {
             .inline_retry_threshold(Duration::from_secs(5))
             .register_fn("slow-retry", |ctx: WfAsyncCtx, _: Value| async move {
                 let v: u32 = ctx
-                    .step("flaky", || async {
+                    .step("flaky", async {
                         if step::current().attempt() < 2 {
                             return Err(StepError::retryable("later"));
                         }
@@ -187,7 +187,7 @@ async fn fatal_error_stops_retries_and_fails_the_run() {
             .register_fn("fatal", move |ctx: WfAsyncCtx, _: Value| {
                 let a = a.clone();
                 async move {
-                    ctx.step("bad", move || async move {
+                    ctx.step("bad", async move {
                         a.fetch_add(1, SeqCst);
                         Err::<(), _>(StepError::fatal("nope"))
                     })
@@ -210,7 +210,7 @@ async fn exhausted_retries_surface_to_workflow_code_which_can_recover() {
         h.worker()
             .register_fn("recover", |ctx: WfAsyncCtx, _: Value| async move {
                 let r = ctx
-                    .step("bad", || async {
+                    .step("bad", async {
                         Err::<i64, _>(StepError::retryable("always"))
                     })
                     .retry(RetryPolicy::none())
@@ -233,7 +233,7 @@ async fn a_panicking_step_is_a_retryable_failure() {
             .inline_retry_threshold(Duration::from_secs(60))
             .register_fn("panic", |ctx: WfAsyncCtx, _: Value| async move {
                 let v: u32 = ctx
-                    .step("p", || async {
+                    .step("p", async {
                         if step::current().attempt() == 1 {
                             panic!("kaboom");
                         }
@@ -260,7 +260,7 @@ async fn step_timeout_fails_the_attempt() {
         h.worker()
             .register_fn("timeout", |ctx: WfAsyncCtx, _: Value| async move {
                 let r = ctx
-                    .step("hang", || async {
+                    .step("hang", async {
                         tokio::time::sleep(Duration::from_secs(3600)).await;
                         Ok::<_, StepError>(1)
                     })
@@ -363,7 +363,7 @@ async fn hooks_deliver_webhook_payloads_by_token() {
             .register_fn("hooked", |ctx: WfAsyncCtx, _: Value| async move {
                 let hook = ctx.create_hook::<Value>("callback").await?;
                 let token = hook.token().to_string();
-                ctx.step("announce", move || async move { Ok::<_, StepError>(token) })
+                ctx.step("announce", async move { Ok::<_, StepError>(token) })
                     .await?;
                 let first = hook.recv().await?;
                 let second = hook.recv().await?;
@@ -508,7 +508,7 @@ async fn cancelling_mid_step_aborts_the_step() {
             .register_fn("cm", move |ctx: WfAsyncCtx, _: Value| {
                 let s = s.clone();
                 async move {
-                    ctx.step("hang", move || async move {
+                    ctx.step("hang", async move {
                         s.fetch_add(1, SeqCst);
                         tokio::time::sleep(Duration::from_secs(3600)).await;
                         Ok::<_, StepError>(())
@@ -557,7 +557,7 @@ async fn start_is_idempotent_on_the_key() {
             .register_fn("once", move |ctx: WfAsyncCtx, _: Value| {
                 let r = r.clone();
                 async move {
-                    ctx.step("s", move || async move {
+                    ctx.step("s", async move {
                         r.fetch_add(1, SeqCst);
                         Ok::<_, StepError>(())
                     })
@@ -613,13 +613,13 @@ async fn failed_run_can_be_retried_from_its_failure_point() {
             .register_fn("retryable-run", move |ctx: WfAsyncCtx, _: Value| {
                 let (okc, badc) = (okc.clone(), badc.clone());
                 async move {
-                    ctx.step("ok", move || async move {
+                    ctx.step("ok", async move {
                         okc.fetch_add(1, SeqCst);
                         Ok::<_, StepError>(1)
                     })
                     .await?;
                     let v: i64 = ctx
-                        .step("flaky", move || async move {
+                        .step("flaky", async move {
                             // Fails until the operator "fixes" it (second run of the body).
                             if badc.fetch_add(1, SeqCst) < 1 {
                                 return Err(StepError::fatal("broken"));
@@ -687,7 +687,7 @@ async fn changed_workflow_code_is_reported_as_non_determinism_and_run_stays_open
     h.spawn(
         h.worker()
             .register_fn("evolve", |ctx: WfAsyncCtx, _: Value| async move {
-                let v: i64 = ctx.step("wait", || async { Ok::<_, StepError>(2) }).await?;
+                let v: i64 = ctx.step("wait", async { Ok::<_, StepError>(2) }).await?;
                 Ok(v)
             }),
     );
@@ -751,7 +751,7 @@ async fn workflow_concurrency_limit_is_never_exceeded() {
         move |ctx: WfAsyncCtx, _: Value| {
             let (nc, pc) = (nc.clone(), pc.clone());
             async move {
-                ctx.step("work", move || async move {
+                ctx.step("work", async move {
                     let cur = nc.fetch_add(1, SeqCst) + 1;
                     pc.fetch_max(cur, SeqCst);
                     tokio::time::sleep(Duration::from_millis(40)).await;

@@ -1,4 +1,4 @@
-//! In-memory reference implementation of every `durable-core` plugin trait.
+//! In-memory reference implementation of every `durable-spi` plugin trait.
 //! For tests and local development; nothing survives a restart.
 
 mod gcra;
@@ -9,7 +9,7 @@ mod streams;
 
 use std::sync::Arc;
 
-use durable_core::{Backend, Clock, SystemClock};
+use durable_spi::{Backend, Clock, SystemClock};
 
 pub use queue::MemoryQueue;
 pub use services::{MemoryCache, MemoryPubSub, MemoryRateLimiter};
@@ -26,7 +26,7 @@ pub fn backend_with_clock(clock: Arc<dyn Clock>) -> Backend {
     builder(clock).build().expect("memory backend is complete")
 }
 
-fn builder(clock: Arc<dyn Clock>) -> durable_core::BackendBuilder {
+fn builder(clock: Arc<dyn Clock>) -> durable_spi::BackendBuilder {
     Backend::builder()
         .streams(MemoryStreams::new(clock.clone()))
         .clock(clock)

@@ -27,14 +27,14 @@ async fn cpu_bound_steps_never_delay_tokio_work() {
             .compute_threads(2)
             .concurrency(8)
             .register_sync_fn("cpu", |ctx: &WfSyncCtx, _: Value| {
-                ctx.step("burn", || {
+                ctx.step_blocking("burn", || {
                     spin(Duration::from_millis(600));
                     Ok::<_, StepError>(())
                 })?;
                 Ok(())
             })
             .register_fn("io", |ctx: WfAsyncCtx, _: Value| async move {
-                ctx.step("quick", || async {
+                ctx.step("quick", async {
                     tokio::time::sleep(Duration::from_millis(30)).await;
                     Ok::<_, StepError>(())
                 })

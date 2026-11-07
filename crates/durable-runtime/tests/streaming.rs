@@ -9,9 +9,9 @@ use std::{
 };
 
 use common::*;
-use durable_core::{Backend, EventKind, RunId};
 use durable_memory::{MemoryCache, MemoryPubSub, MemoryQueue, MemoryStore};
 use durable_runtime::*;
+use durable_spi::{Backend, EventKind, RunId};
 use durable_testkit::{ManualClock, t0};
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -23,7 +23,7 @@ async fn collect_watch(h: &Harness, id: RunId, after: u64) -> Vec<RunUpdate> {
         .expect("watch ends after the terminal event")
 }
 
-fn events_of(updates: &[RunUpdate]) -> Vec<durable_core::Event> {
+fn events_of(updates: &[RunUpdate]) -> Vec<durable_spi::Event> {
     updates
         .iter()
         .filter_map(|u| match u {
@@ -55,7 +55,7 @@ fn token_worker(h: &Harness) -> WorkerBuilder {
     h.worker()
         .register_fn("tokens", |ctx: WfAsyncCtx, words: Vec<String>| async move {
             let text: String = ctx
-                .step("gen", move || async move {
+                .step("gen", async move {
                     let w = step::current().stream::<String>("tokens");
                     for word in &words {
                         w.write(word)?;
@@ -73,9 +73,9 @@ async fn watch_yields_every_event_in_order_and_ends_at_the_terminal() {
     h.spawn(
         h.worker()
             .register_fn("two", |ctx: WfAsyncCtx, _: Value| async move {
-                let a: i64 = ctx.step("a", || async { Ok::<_, StepError>(1) }).await?;
+                let a: i64 = ctx.step("a", async { Ok::<_, StepError>(1) }).await?;
                 let b: i64 = ctx
-                    .step("b", move || async move { Ok::<_, StepError>(a + 1) })
+                    .step("b", async move { Ok::<_, StepError>(a + 1) })
                     .await?;
                 Ok(b)
             }),
@@ -96,8 +96,8 @@ async fn watch_resumes_after_a_seq_without_gaps_or_duplicates() {
     h.spawn(
         h.worker()
             .register_fn("two", |ctx: WfAsyncCtx, _: Value| async move {
-                ctx.step("a", || async { Ok::<_, StepError>(1) }).await?;
-                ctx.step("b", || async { Ok::<_, StepError>(2) }).await?;
+                ctx.step("a", async { Ok::<_, StepError>(1) }).await?;
+                ctx.step("b", async { Ok::<_, StepError>(2) }).await?;
                 Ok(())
             }),
     );
@@ -119,7 +119,7 @@ async fn watch_follows_a_live_run_and_reports_step_starts() {
             .register_fn("slow", move |ctx: WfAsyncCtx, _: Value| {
                 let g = g.clone();
                 async move {
-                    ctx.step("work", move || async move {
+                    ctx.step("work", async move {
                         g.notified().await;
                         Ok::<_, StepError>(7)
                     })
@@ -212,7 +212,7 @@ async fn a_failed_attempt_is_marked_and_the_retry_streams_afresh() {
             .register_fn("flaky", move |ctx: WfAsyncCtx, _: Value| {
                 let a = a.clone();
                 async move {
-                    ctx.step("gen", move || async move {
+                    ctx.step("gen", async move {
                         let w = step::current().stream::<String>("tokens");
                         if a.fetch_add(1, SeqCst) == 0 {
                             w.write(&"x".to_string())?;
@@ -260,7 +260,7 @@ async fn all_chunks_are_readable_before_the_step_event_appears_on_watch() {
             let chunks = store.read(id, "tokens", None, 100).await.unwrap();
             let data = chunks
                 .iter()
-                .filter(|c| matches!(c.body, durable_core::ChunkBody::Data(_)))
+                .filter(|c| matches!(c.body, durable_spi::ChunkBody::Data(_)))
                 .count();
             assert_eq!(data, 10, "every chunk precedes StepSucceeded");
             return;
@@ -276,7 +276,7 @@ async fn parallel_steps_on_one_stream_keep_per_writer_order() {
         h.worker()
             .register_fn("par", |ctx: WfAsyncCtx, _: Value| async move {
                 let one = |name: &'static str| {
-                    ctx.step(name, move || async move {
+                    ctx.step(name, async move {
                         let w = step::current().stream::<String>("tokens");
                         for i in 0..50 {
                             w.write(&format!("{name}{i}"))?;
@@ -335,7 +335,7 @@ async fn forward_pipes_a_futures_stream_and_returns_the_items() {
     h.spawn(
         h.worker()
             .register_fn("fwd", |ctx: WfAsyncCtx, _: Value| async move {
-                ctx.step("gen", || async {
+                ctx.step("gen", async {
                     let src = futures::stream::iter(["he", "llo"].map(String::from));
                     let got = step::current()
                         .stream::<String>("tokens")
@@ -387,7 +387,7 @@ async fn a_chunk_over_max_payload_bytes_fails_the_step() {
     h.spawn(h.worker().max_payload_bytes(64).register_fn(
         "big",
         |ctx: WfAsyncCtx, _: Value| async move {
-            ctx.step("gen", || async {
+            ctx.step("gen", async {
                 step::current()
                     .stream::<String>("t")
                     .write(&"x".repeat(100))?;
@@ -398,7 +398,7 @@ async fn a_chunk_over_max_payload_bytes_fails_the_step() {
         },
     ));
     let id = h.start("big", json!(null)).await;
-    let run = h.status(id, durable_core::RunStatus::Failed).await;
+    let run = h.status(id, durable_spi::RunStatus::Failed).await;
     assert!(run.error.unwrap().contains("max_payload_bytes"));
 }
 
@@ -413,7 +413,7 @@ async fn is_replaying_is_true_only_while_history_is_fed() {
                 let s = s.clone();
                 async move {
                     s.lock().push(("start", ctx.is_replaying()));
-                    ctx.step("a", || async { Ok::<_, StepError>(1) }).await?;
+                    ctx.step("a", async { Ok::<_, StepError>(1) }).await?;
                     s.lock().push(("after_a", ctx.is_replaying()));
                     ctx.sleep("nap", Duration::from_secs(3600)).await?;
                     s.lock().push(("after_nap", ctx.is_replaying()));
@@ -448,7 +448,7 @@ async fn is_replaying_is_exposed_to_sync_workflows() {
     h.spawn(
         h.worker()
             .register_sync_fn("sync", move |ctx: &WfSyncCtx, _: Value| {
-                ctx.step("a", || Ok::<_, StepError>(1))?;
+                ctx.step_blocking("a", || Ok::<_, StepError>(1))?;
                 if ctx.is_replaying() {
                     r.fetch_add(1, SeqCst);
                 }
