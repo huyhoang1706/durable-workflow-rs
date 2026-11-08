@@ -20,3 +20,11 @@ if cargo tree -p durable-sm -e normal | grep -qE ' (tokio|futures|async-trait)[a
     echo "error: durable-sm depends on an async runtime" >&2
     exit 1
 fi
+
+# The TypeScript binding: the native addon, type checks and the corpus checks
+# through the FFI. Needs Node >= 22.18 (it runs the .ts tests directly).
+if command -v node >/dev/null; then
+    (cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test)
+else
+    echo "warning: node not found; skipping the TypeScript binding" >&2
+fi

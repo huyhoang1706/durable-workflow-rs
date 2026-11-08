@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "plugins/*", "examples/*"]
+members = ["crates/*", "plugins/*", "examples/*", "bindings/typescript"]
 
 [workspace.package]
 version = "0.1.0"
