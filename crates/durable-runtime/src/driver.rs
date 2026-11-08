@@ -1,6 +1,9 @@
-//! Drivers run user workflow code against a `Core`. They differ only in how
-//! the body runs: an async future polled by the engine, or a blocking body on
-//! its own thread. Both are *disposable*: a pure function of history.
+//! The Rust host: drivers run user workflow code against a `Core`, and
+//! [`RustExecution`] plugs them into the engine as a [`HostExecution`].
+//!
+//! Drivers differ only in how the body runs: an async future polled by the
+//! engine, or a blocking body on its own thread. Both are *disposable*: a pure
+//! function of history.
 
 use std::{
     any::Any,
@@ -14,12 +17,20 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use futures::future::BoxFuture;
+use async_trait::async_trait;
+use durable_sm::{Handle, Resolution};
+use durable_spi::ComputePool;
+use futures::{FutureExt, future::BoxFuture};
 use parking_lot::{Condvar, Mutex};
 use serde_json::Value;
 use tokio::sync::Notify;
 
-use crate::{WfSyncCtx, WorkflowError, core::Core};
+use crate::{
+    StepError, WfSyncCtx, WorkflowError,
+    core::{Core, StepStart},
+    host::{ExecStatus, HostExecution, StepAttempt},
+    step::{self, StepInfo},
+};
 
 pub(crate) type RunResult = Result<Value, WorkflowError>;
 
@@ -50,22 +61,6 @@ impl Driver {
             Self::Sync(d) => d.interrupt(),
         }
     }
-}
-
-/// Replay `core`'s history into a freshly started `driver`.
-///
-/// The poll after the newest event is live (`is_replaying` is false): it is
-/// the first time the body sees that event, unless an earlier execution
-/// crashed before acting on it, in which case acting twice beats never acting.
-pub(crate) async fn replay(core: &Core, driver: &mut Driver) -> DriverStatus {
-    let mut status = DriverStatus::Pending;
-    while core.advance() == crate::core::Advance::RunCode {
-        status = driver.poll().await;
-        if core.fault().is_some() {
-            break;
-        }
-    }
-    status
 }
 
 pub(crate) fn panic_message(p: Box<dyn Any + Send>) -> String {
@@ -184,24 +179,35 @@ impl SyncShared {
     }
 }
 
+type SyncBody = Box<dyn FnOnce(&WfSyncCtx) -> RunResult + Send + 'static>;
+
 pub(crate) struct SyncDriver {
     core: Arc<Core>,
     shared: Arc<SyncShared>,
+    /// The body, until the first `quiesce` starts its thread.
+    body: Option<SyncBody>,
 }
 
 impl SyncDriver {
-    pub fn spawn(
-        core: Arc<Core>,
-        body: Box<dyn FnOnce(&WfSyncCtx) -> RunResult + Send + 'static>,
-    ) -> Self {
+    /// The body's thread starts on the first `quiesce`, so no user code runs
+    /// before the engine's first activation.
+    pub fn new(core: Arc<Core>, body: SyncBody) -> Self {
         let shared = Arc::new(SyncShared {
             state: Mutex::default(),
             cv: Condvar::new(),
             notify: Notify::new(),
         });
-        let (thread_core, thread_shared) = (core.clone(), shared.clone());
+        Self {
+            core,
+            shared,
+            body: Some(body),
+        }
+    }
+
+    fn spawn(&mut self, body: SyncBody) {
+        let (thread_core, thread_shared) = (self.core.clone(), self.shared.clone());
         std::thread::Builder::new()
-            .name(format!("durable-sync-{}", core.run_id))
+            .name(format!("durable-sync-{}", self.core.run_id))
             .spawn(move || {
                 let ctx = WfSyncCtx::new(thread_core, thread_shared.clone());
                 let result = catch_unwind(AssertUnwindSafe(|| body(&ctx))).unwrap_or_else(|p| {
@@ -214,10 +220,12 @@ impl SyncDriver {
                 thread_shared.notify.notify_one();
             })
             .expect("spawn sync driver thread");
-        Self { core, shared }
     }
 
     async fn quiesce(&mut self) -> DriverStatus {
+        if let Some(body) = self.body.take() {
+            self.spawn(body);
+        }
         loop {
             let notified = self.shared.notify.notified();
             tokio::pin!(notified);
@@ -238,6 +246,7 @@ impl SyncDriver {
 
     fn interrupt(&mut self) {
         // Every pending and future ctx call now fails, so the body unwinds.
+        self.body = None;
         self.core.interrupt();
     }
 }
@@ -245,5 +254,74 @@ impl SyncDriver {
 impl Drop for SyncDriver {
     fn drop(&mut self) {
         self.core.interrupt();
+    }
+}
+
+/// A Rust workflow body, run for the engine.
+pub(crate) struct RustExecution {
+    core: Arc<Core>,
+    driver: Driver,
+    pool: Arc<dyn ComputePool>,
+}
+
+impl RustExecution {
+    pub fn new(core: Arc<Core>, driver: Driver, pool: Arc<dyn ComputePool>) -> Self {
+        Self { core, driver, pool }
+    }
+}
+
+#[async_trait]
+impl HostExecution for RustExecution {
+    async fn activate(&mut self, resolved: Vec<(Handle, Resolution)>) -> ExecStatus {
+        self.core.wake(resolved.into_iter().map(|(h, _)| h));
+        match self.driver.poll().await {
+            DriverStatus::Pending => ExecStatus::Pending,
+            DriverStatus::Finished(r) => ExecStatus::Finished(r.map_err(|e| e.failure())),
+        }
+    }
+
+    fn start_step(
+        &mut self,
+        key: &str,
+        _attempt: u32,
+        info: StepInfo,
+        span: &tracing::Span,
+    ) -> Option<StepAttempt> {
+        Some(match self.core.take_start(key)? {
+            StepStart::Async(fut) => StepAttempt {
+                kind: "async",
+                fut: step::scope_async(info, fut).boxed(),
+            },
+            StepStart::Blocking(f) => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let span = span.clone();
+                self.pool.execute(Box::new(move || {
+                    let _entered = span.enter();
+                    let r = catch_unwind(AssertUnwindSafe(|| step::scope_blocking(info, f)))
+                        .unwrap_or_else(|p| {
+                            Err(StepError::retryable(format!(
+                                "step panicked: {}",
+                                panic_message(p)
+                            )))
+                        });
+                    let _ = tx.send(r);
+                }));
+                StepAttempt {
+                    kind: "blocking",
+                    // A job the pool dropped never reports, as before.
+                    fut: async move {
+                        match rx.await {
+                            Ok(r) => r,
+                            Err(_) => std::future::pending().await,
+                        }
+                    }
+                    .boxed(),
+                }
+            }
+        })
+    }
+
+    fn interrupt(&mut self) {
+        self.driver.interrupt();
     }
 }

@@ -19,11 +19,10 @@ use tokio::{
 
 use crate::{
     Deps, DepsBuilder, ThreadPool, WfAsyncCtx, WfSyncCtx, WorkflowError, WorkflowOptions, channels,
-    core::Core,
-    driver::{self, DriverStatus},
     engine::{self, EngineEnv, Outcome, notify_run},
+    host::{self, ExecEnv, ExecStatus, HostWorkflow, ReplayHandle},
     stream::{StreamLimits, close_run_streams},
-    workflow::{AsyncFn, ErasedWorkflow, IntoWorkflow, SyncFn},
+    workflow::{AsyncFn, IntoWorkflow, SyncFn},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -55,7 +54,7 @@ struct Config {
 pub struct WorkerBuilder {
     backend: Backend,
     deps: DepsBuilder,
-    workflows: Vec<Arc<dyn ErasedWorkflow>>,
+    workflows: Vec<Arc<dyn HostWorkflow>>,
     cfg: Config,
 }
 
@@ -99,7 +98,10 @@ impl WorkerBuilder {
         workflow.register(self)
     }
 
-    pub(crate) fn push(mut self, w: Arc<dyn ErasedWorkflow>) -> Self {
+    /// Register a workflow written for any host (a language binding, or a
+    /// test double). Rust workflows use [`register`](Self::register).
+    #[doc(hidden)]
+    pub fn register_host(mut self, w: Arc<dyn HostWorkflow>) -> Self {
         self.workflows.push(w);
         self
     }
@@ -300,7 +302,7 @@ struct Active {
 struct Shared {
     backend: Backend,
     env: EngineEnv,
-    workflows: Vec<Arc<dyn ErasedWorkflow>>,
+    workflows: Vec<Arc<dyn HostWorkflow>>,
     cfg: Config,
     worker_id: String,
     sem: Arc<Semaphore>,
@@ -351,7 +353,9 @@ impl Worker {
 
     /// Replay a stored `history` through the registered `workflow` the way
     /// the engine does, with no store and no step execution, and record
-    /// every replayer call. Returns `None` for an unknown workflow.
+    /// every replayer call. Works for any host (see
+    /// [`register_host`](WorkerBuilder::register_host)). Returns `None` for an
+    /// unknown workflow.
     ///
     /// The replay conformance corpus (`durable_testkit::corpus`) is written
     /// and checked with this.
@@ -368,25 +372,28 @@ impl Worker {
             .workflows
             .iter()
             .find(|w| w.name() == workflow)?;
-        let core = Core::new(
+        let replay = ReplayHandle::new(run_id, crate::history::normalize(history));
+        replay.with(durable_sm::Replayer::record);
+        let mut exec = wf.start(ExecEnv {
             run_id,
-            self.shared.env.deps.clone(),
-            crate::history::normalize(history),
-        );
-        core.record();
-        let mut driver = wf.start(core.clone(), input);
-        let status = driver::replay(&core, &mut driver).await;
-        let replay = Replay {
-            trace: core.take_trace(),
-            frontier: core.frontier(),
-            fault: core.fault(),
+            input,
+            replay: replay.clone(),
+            deps: self.shared.env.deps.clone(),
+            pool: self.shared.env.pool.clone(),
+        });
+        let status = host::replay(&replay, &mut *exec, ExecStatus::Pending).await;
+        let (trace, frontier, fault) =
+            replay.with(|r| (r.take_trace(), r.frontier(), r.fault().map(str::to_string)));
+        exec.interrupt();
+        Some(Replay {
+            trace,
+            frontier,
+            fault,
             result: match status {
-                DriverStatus::Pending => None,
-                DriverStatus::Finished(r) => Some(r.map_err(|e| e.failure())),
+                ExecStatus::Pending => None,
+                ExecStatus::Finished(r) => Some(r),
             },
-        };
-        driver.interrupt();
-        Some(replay)
+        })
     }
 }
 
@@ -482,7 +489,7 @@ fn limits_for(def: &WorkflowDefinition) -> ClaimLimits {
 
 async fn claim_loop(
     sh: Arc<Shared>,
-    wf: Arc<dyn ErasedWorkflow>,
+    wf: Arc<dyn HostWorkflow>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let ns = sh.backend.namespace.clone();
@@ -573,7 +580,7 @@ async fn claim_loop(
 
 async fn run_one(
     sh: Arc<Shared>,
-    wf: Arc<dyn ErasedWorkflow>,
+    wf: Arc<dyn HostWorkflow>,
     lease: Lease,
     lost: Arc<Notify>,
     _permit: OwnedSemaphorePermit,

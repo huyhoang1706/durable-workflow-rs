@@ -1,6 +1,6 @@
 # Iteration 3: a sans-IO core for TS/JS and Python SDKs
 
-> Status: P0–P2 are done; P3 (Node binding) is next. The design sections below are the original sketch. The
+> Status: P0–P2 and P3a are done; P3 (Node binding) is next. The design sections below are the original sketch. The
 > "as built" sections record where the code differs. `durable-core` was renamed `durable-spi` after P1 (#9); the
 > as-built notes keep the name used at the time.
 
@@ -280,7 +280,7 @@ or, for sync `def` steps, in a thread pool.
 | P0 ✅ | Create `crates/durable-sm`. Move `Core` → `Replayer` (handles, `advance`, no wakers/closures/deps). `CmdFuture` becomes a ~30-line adapter: handle + waker map in `durable-runtime`. | Whole existing suite passes unchanged. `durable-sm` has no tokio/futures dependency (CI check). |
 | P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 ✅ | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
-| P3a | **Host abstraction** (see "P3a: hosting workflows written in other languages"): the engine runs any workflow through `HostWorkflow` / `HostExecution`, and Rust becomes the first host. | Suite and corpus pass unchanged. A scripted host with no Rust futures runs corpus workflows end to end on the real engine. |
+| P3a ✅ | **Host abstraction** (see "P3a: hosting workflows written in other languages"): the engine runs any workflow through `HostWorkflow` / `HostExecution`, and Rust becomes the first host. | Suite and corpus pass unchanged. A scripted host with no Rust futures runs corpus workflows end to end on the real engine. |
 | P3 | `bindings/node` (napi-rs): embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/node-onboarding` passes the conformance corpus and a crash/resume chaos test. |
 | P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
@@ -521,6 +521,34 @@ impl WorkerBuilder {
 The existing suite and the corpus pass unchanged. A test-only `ScriptedHost` replays corpus traces through the
 real engine on the memory backend, issuing commands from the trace with no Rust futures or `Driver`, and runs
 `sequential_steps`, `step_retry`, `signal` and `race_timer_wins` to the recorded result.
+
+## P3a as built
+
+P3a landed on `refactor/host-abstraction`. The full suite passes apart from the tests that need Docker, and so does
+the corpus. The engine no longer knows about `Driver`, `Core` or `WorkflowError`: it runs every workflow through
+`durable_runtime::host` (`#[doc(hidden)]`). Where the code differs from the design above:
+
+- **`host::replay` takes the previous status.** `apply` delivers live commits through the same loop as `rebuild` and
+  `Worker::replay`, and must keep the body's last status when a commit resolves nothing. The loop now stops on a
+  fault in `apply` too; before, it kept polling a faulted body, which then returned an error the engine ignored in
+  favour of the fault.
+- **The Rust host keeps its state behind its own lock.** `Core` holds the shared `ReplayHandle` plus a
+  `Mutex<HostState>` (wakers, `StepStart`s). The lock order is host state, then replayer, so a ctx call can issue a
+  command and park its waker atomically while the engine (which only ever takes the replayer) resolves handles.
+  `RustExecution` lives in `driver.rs`.
+- **The sync driver's thread starts on the first activation**, not in `start`. It used to start right away and could
+  race the first `advance`, so `start` now runs no user code for any host, as the trait requires.
+- **Spent bodies are found while launching.** `Run { launch }` launches attempts in order; the first `start_step`
+  that returns `None` stops the loop and the engine rebuilds, the same outcome as the old `has_start` pre-check.
+  The span's `durable.step.kind` is recorded from `StepAttempt::kind` once the host has answered.
+- **`Worker::replay` still looks the workflow up by name.** Every registered workflow is a `HostWorkflow`, so a
+  binding registers with `WorkerBuilder::register_host` and replays through the same entry point.
+- **`ScriptedHost`** lives in `durable-runtime/tests/replay_corpus.rs`. It splits a case's trace into one segment per
+  `advance`, makes the segment's recorded calls when the matching resolutions arrive (live activations that resolve
+  nothing are ignored), and answers `start_step` with the attempt's outcome from the case history. It runs
+  `sequential_steps`, `step_retry`, `signal` and `race_timer_wins` on the memory backend to the recorded output, and
+  checks that the engine writes a history of the same shape. A mismatch becomes a replayer fault, so the run
+  records it instead of hanging silently.
 
 ## Open questions
 

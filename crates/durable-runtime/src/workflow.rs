@@ -8,7 +8,8 @@ use crate::{
     WfAsyncCtx, WfSyncCtx, WorkflowError,
     core::Core,
     deps::DepKey,
-    driver::{AsyncDriver, Driver, SyncDriver},
+    driver::{AsyncDriver, Driver, RustExecution, SyncDriver},
+    host::{ExecEnv, HostExecution, HostWorkflow},
 };
 
 /// Flow control and limits for a workflow.
@@ -142,7 +143,7 @@ impl<W: AsyncWorkflow> IntoWorkflow<AsyncKind> for W {
     const NAME: &'static str = <W as AsyncWorkflow>::NAME;
 
     fn register(self, builder: crate::WorkerBuilder) -> crate::WorkerBuilder {
-        builder.push(Arc::new(AsyncAdapter(Arc::new(self))))
+        builder.register_host(Arc::new(AsyncAdapter(Arc::new(self))))
     }
 }
 
@@ -150,15 +151,18 @@ impl<W: SyncWorkflow> IntoWorkflow<SyncKind> for W {
     const NAME: &'static str = <W as SyncWorkflow>::NAME;
 
     fn register(self, builder: crate::WorkerBuilder) -> crate::WorkerBuilder {
-        builder.push(Arc::new(SyncAdapter(Arc::new(self))))
+        builder.register_host(Arc::new(SyncAdapter(Arc::new(self))))
     }
 }
 
-pub(crate) trait ErasedWorkflow: Send + Sync + 'static {
-    fn name(&self) -> &str;
-    fn definition(&self) -> WorkflowDefinition;
-    fn required_deps(&self) -> Vec<DepKey>;
-    fn start(&self, core: Arc<Core>, input: Value) -> Driver;
+/// Start a Rust body: `driver` gets the execution's `Core`.
+fn start_rust(
+    env: ExecEnv,
+    driver: impl FnOnce(Arc<Core>, Value) -> Driver,
+) -> Box<dyn HostExecution> {
+    let core = Core::new(env.run_id, env.deps, env.replay);
+    let driver = driver(core.clone(), env.input);
+    Box::new(RustExecution::new(core, driver, env.pool))
 }
 
 fn decode_input<I: DeserializeOwned>(v: Value) -> Result<I, WorkflowError> {
@@ -173,7 +177,7 @@ fn encode_output<O: Serialize>(o: O) -> Result<Value, WorkflowError> {
 
 pub(crate) struct AsyncAdapter<W>(pub Arc<W>);
 
-impl<W: AsyncWorkflow> ErasedWorkflow for AsyncAdapter<W> {
+impl<W: AsyncWorkflow> HostWorkflow for AsyncAdapter<W> {
     fn name(&self) -> &str {
         W::NAME
     }
@@ -183,21 +187,24 @@ impl<W: AsyncWorkflow> ErasedWorkflow for AsyncAdapter<W> {
     fn required_deps(&self) -> Vec<DepKey> {
         W::required_deps()
     }
-    fn start(&self, core: Arc<Core>, input: Value) -> Driver {
-        let (w, ctx) = (self.0.clone(), WfAsyncCtx::new(core.clone()));
-        Driver::Async(AsyncDriver::new(
-            core,
-            Box::pin(async move {
-                let out = w.run(ctx, decode_input(input)?).await?;
-                encode_output(out)
-            }),
-        ))
+    fn start(&self, env: ExecEnv) -> Box<dyn HostExecution> {
+        let w = self.0.clone();
+        start_rust(env, |core, input| {
+            let ctx = WfAsyncCtx::new(core.clone());
+            Driver::Async(AsyncDriver::new(
+                core,
+                Box::pin(async move {
+                    let out = w.run(ctx, decode_input(input)?).await?;
+                    encode_output(out)
+                }),
+            ))
+        })
     }
 }
 
 pub(crate) struct SyncAdapter<W>(pub Arc<W>);
 
-impl<W: SyncWorkflow> ErasedWorkflow for SyncAdapter<W> {
+impl<W: SyncWorkflow> HostWorkflow for SyncAdapter<W> {
     fn name(&self) -> &str {
         W::NAME
     }
@@ -207,12 +214,14 @@ impl<W: SyncWorkflow> ErasedWorkflow for SyncAdapter<W> {
     fn required_deps(&self) -> Vec<DepKey> {
         W::required_deps()
     }
-    fn start(&self, core: Arc<Core>, input: Value) -> Driver {
+    fn start(&self, env: ExecEnv) -> Box<dyn HostExecution> {
         let w = self.0.clone();
-        Driver::Sync(SyncDriver::spawn(
-            core,
-            Box::new(move |ctx| encode_output(w.run(ctx, decode_input(input)?)?)),
-        ))
+        start_rust(env, |core, input| {
+            Driver::Sync(SyncDriver::new(
+                core,
+                Box::new(move |ctx| encode_output(w.run(ctx, decode_input(input)?)?)),
+            ))
+        })
     }
 }
 
@@ -223,7 +232,7 @@ pub(crate) struct AsyncFn<I, O, F> {
     pub _t: PhantomData<fn(I) -> O>,
 }
 
-impl<I, O, F, Fut> ErasedWorkflow for AsyncFn<I, O, F>
+impl<I, O, F, Fut> HostWorkflow for AsyncFn<I, O, F>
 where
     I: DeserializeOwned + Send + 'static,
     O: Serialize + Send + 'static,
@@ -236,15 +245,15 @@ where
     fn definition(&self) -> WorkflowDefinition {
         self.options.definition(&self.name)
     }
-    fn required_deps(&self) -> Vec<DepKey> {
-        vec![]
-    }
-    fn start(&self, core: Arc<Core>, input: Value) -> Driver {
-        let (f, ctx) = (self.f.clone(), WfAsyncCtx::new(core.clone()));
-        Driver::Async(AsyncDriver::new(
-            core,
-            Box::pin(async move { encode_output(f(ctx, decode_input(input)?).await?) }),
-        ))
+    fn start(&self, env: ExecEnv) -> Box<dyn HostExecution> {
+        let f = self.f.clone();
+        start_rust(env, |core, input| {
+            let ctx = WfAsyncCtx::new(core.clone());
+            Driver::Async(AsyncDriver::new(
+                core,
+                Box::pin(async move { encode_output(f(ctx, decode_input(input)?).await?) }),
+            ))
+        })
     }
 }
 
@@ -255,7 +264,7 @@ pub(crate) struct SyncFn<I, O, F> {
     pub _t: PhantomData<fn(I) -> O>,
 }
 
-impl<I, O, F> ErasedWorkflow for SyncFn<I, O, F>
+impl<I, O, F> HostWorkflow for SyncFn<I, O, F>
 where
     I: DeserializeOwned + Send + 'static,
     O: Serialize + Send + 'static,
@@ -267,14 +276,13 @@ where
     fn definition(&self) -> WorkflowDefinition {
         self.options.definition(&self.name)
     }
-    fn required_deps(&self) -> Vec<DepKey> {
-        vec![]
-    }
-    fn start(&self, core: Arc<Core>, input: Value) -> Driver {
+    fn start(&self, env: ExecEnv) -> Box<dyn HostExecution> {
         let f = self.f.clone();
-        Driver::Sync(SyncDriver::spawn(
-            core,
-            Box::new(move |ctx| encode_output(f(ctx, decode_input(input)?)?)),
-        ))
+        start_rust(env, |core, input| {
+            Driver::Sync(SyncDriver::new(
+                core,
+                Box::new(move |ctx| encode_output(f(ctx, decode_input(input)?)?)),
+            ))
+        })
     }
 }

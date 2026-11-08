@@ -1,4 +1,4 @@
-//! The Rust host for `durable_sm::Replayer`: wakers, step closures and deps.
+//! The Rust host's per-execution state: wakers, step closures and deps.
 //!
 //! All replay logic (keys, history matching, non-determinism, the frontier,
 //! now/random/uuid) lives in the replayer. This module only connects it to
@@ -15,13 +15,13 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use durable_sm::{Abort, Handle, Replayer, StepFailure};
-pub(crate) use durable_sm::{Advance, Command, Pending, Resolution};
-use durable_spi::{Event, RunId};
+pub(crate) use durable_sm::{Command, Resolution};
+use durable_spi::RunId;
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
 use serde_json::Value;
 
-use crate::{Deps, ErrorClass, StepError, WorkflowError};
+use crate::{Deps, ErrorClass, StepError, WorkflowError, host::ReplayHandle};
 
 pub(crate) type StepFut = BoxFuture<'static, Result<Value, StepError>>;
 
@@ -44,130 +44,97 @@ pub(crate) fn step_error(f: StepFailure) -> StepError {
     }
 }
 
-struct Inner {
-    sm: Replayer,
+/// Host-side state of one execution: what the replayer cannot hold.
+#[derive(Default)]
+struct HostState {
     wakers: HashMap<Handle, Waker>,
     /// Step bodies by key. Taken when an attempt launches; a retry after that
     /// needs a rebuild, because the closures are `FnOnce`.
     starts: HashMap<String, StepStart>,
 }
 
+/// The Rust host's view of one execution: the shared replayer plus wakers,
+/// step closures and deps.
+///
+/// Lock order: `host` before the replayer. The engine only ever takes the
+/// replayer, for one call at a time, so it cannot deadlock with a ctx call.
 pub(crate) struct Core {
     pub run_id: RunId,
     pub deps: Deps,
-    inner: Mutex<Inner>,
+    replay: ReplayHandle,
+    host: Mutex<HostState>,
 }
 
 impl Core {
-    /// `history` must already be normalized for replay.
-    pub fn new(run_id: RunId, deps: Deps, history: Vec<Event>) -> Arc<Self> {
+    pub fn new(run_id: RunId, deps: Deps, replay: ReplayHandle) -> Arc<Self> {
         Arc::new(Self {
             run_id,
             deps,
-            inner: Mutex::new(Inner {
-                sm: Replayer::new(run_id, history),
-                wakers: HashMap::new(),
-                starts: HashMap::new(),
-            }),
+            replay,
+            host: Mutex::default(),
         })
     }
 
+    fn sm<R>(&self, f: impl FnOnce(&mut Replayer) -> R) -> R {
+        self.replay.with(f)
+    }
+
     pub fn is_replaying(&self) -> bool {
-        self.inner.lock().sm.is_replaying()
-    }
-
-    /// Record every replayer call (see `durable_sm::TraceOp`).
-    pub fn record(&self) {
-        self.inner.lock().sm.record();
-    }
-
-    pub fn take_trace(&self) -> Vec<durable_sm::TraceOp> {
-        self.inner.lock().sm.take_trace()
+        self.sm(|r| r.is_replaying())
     }
 
     pub fn user_key(&self, name: &str) -> String {
-        self.inner.lock().sm.user_key(name)
+        self.sm(|r| r.user_key(name))
     }
 
     pub fn check_name(&self, name: &str) {
-        self.inner.lock().sm.check_name(name);
+        self.sm(|r| r.check_name(name));
     }
 
     pub fn key_for(&self, name: &str) -> String {
-        self.inner.lock().sm.key_for(name)
+        self.sm(|r| r.key_for(name))
     }
 
     pub fn now(&self) -> DateTime<Utc> {
-        self.inner.lock().sm.now()
+        self.sm(|r| r.now())
     }
 
     pub fn random_u64(&self) -> u64 {
-        self.inner.lock().sm.random_u64()
+        self.sm(Replayer::random_u64)
     }
 
     pub fn uuid(&self) -> uuid::Uuid {
-        self.inner.lock().sm.uuid()
-    }
-
-    pub fn fault(&self) -> Option<String> {
-        self.inner.lock().sm.fault().map(str::to_string)
+        self.sm(Replayer::uuid)
     }
 
     pub fn set_fault(&self, msg: String) {
-        self.inner.lock().sm.set_fault(msg);
+        self.sm(|r| r.set_fault(msg));
     }
 
     /// Fail every pending and future ctx call with `Interrupted`.
     pub fn interrupt(&self) {
-        self.abort_with(Replayer::interrupt);
-    }
-
-    /// Fail every pending and future ctx call with `Cancelled`.
-    pub fn cancel(&self) {
-        self.abort_with(Replayer::cancel);
-    }
-
-    fn abort_with(&self, f: fn(&mut Replayer)) {
         let wakers: Vec<Waker> = {
-            let mut g = self.inner.lock();
-            f(&mut g.sm);
+            let mut g = self.host.lock();
+            self.sm(Replayer::interrupt);
             g.wakers.drain().map(|(_, w)| w).collect()
         };
         wakers.into_iter().for_each(Waker::wake);
     }
 
-    pub fn take_start(&self, key: &str) -> Option<StepStart> {
-        self.inner.lock().starts.remove(key)
-    }
-
-    pub fn has_start(&self, key: &str) -> bool {
-        self.inner.lock().starts.contains_key(key)
-    }
-
-    pub fn frontier(&self) -> Vec<Pending> {
-        self.inner.lock().sm.frontier()
-    }
-
-    /// Apply history up to the next point where the code must run, and wake
-    /// the futures it resolved. The caller polls the driver on `RunCode`.
-    pub fn advance(&self) -> Advance {
-        let (advance, wakers) = {
-            let mut g = self.inner.lock();
-            let advance = g.sm.advance();
-            let resolved = g.sm.take_resolved();
-            let wakers: Vec<Waker> = resolved
+    /// Wake the futures awaiting these handles.
+    pub fn wake(&self, handles: impl IntoIterator<Item = Handle>) {
+        let wakers: Vec<Waker> = {
+            let mut g = self.host.lock();
+            handles
                 .into_iter()
-                .filter_map(|(h, _)| g.wakers.remove(&h))
-                .collect();
-            (advance, wakers)
+                .filter_map(|h| g.wakers.remove(&h))
+                .collect()
         };
         wakers.into_iter().for_each(Waker::wake);
-        advance
     }
 
-    /// Queue events the engine just committed; deliver them with `advance`.
-    pub fn push_live(&self, events: Vec<Event>) {
-        self.inner.lock().sm.push_live(events);
+    pub fn take_start(&self, key: &str) -> Option<StepStart> {
+        self.host.lock().starts.remove(key)
     }
 }
 
@@ -210,8 +177,9 @@ impl Future for CmdFuture {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
-        let mut g = this.core.inner.lock();
-        if let Some(abort) = g.sm.abort() {
+        let core = this.core.clone();
+        let mut g = core.host.lock();
+        if let Some(abort) = core.sm(|r| r.abort()) {
             this.finished = true;
             return Poll::Ready(Err(match abort {
                 Abort::Interrupted => WorkflowError::Interrupted,
@@ -220,12 +188,14 @@ impl Future for CmdFuture {
             }));
         }
         if let Some((command, start)) = this.pending.take() {
-            let duplicate = g.sm.is_issued(&this.key);
-            let handle = g.sm.issue(this.key.clone(), command);
+            let (duplicate, handle, fault) = core.sm(|r| {
+                let duplicate = r.is_issued(&this.key);
+                let handle = r.issue(this.key.clone(), command);
+                (duplicate, handle, r.fault().unwrap_or_default().to_string())
+            });
             if duplicate {
                 this.finished = true;
-                let msg = g.sm.fault().unwrap_or_default().to_string();
-                return Poll::Ready(Err(WorkflowError::Fault(msg)));
+                return Poll::Ready(Err(WorkflowError::Fault(fault)));
             }
             if let Some(start) = start {
                 g.starts.insert(this.key.clone(), start);
@@ -233,9 +203,9 @@ impl Future for CmdFuture {
             this.handle = Some(handle);
         }
         let handle = this.handle.expect("command issued");
-        if let Some(r) = g.sm.resolution(handle) {
+        if let Some(r) = core.sm(|r| r.resolution(handle).cloned()) {
             this.finished = true;
-            return Poll::Ready(Ok(r.clone()));
+            return Poll::Ready(Ok(r));
         }
         g.wakers.insert(handle, cx.waker().clone());
         Poll::Pending
@@ -248,8 +218,8 @@ impl Drop for CmdFuture {
             return;
         }
         if let Some(h) = self.handle {
-            let mut g = self.core.inner.lock();
-            g.sm.release(h);
+            let mut g = self.core.host.lock();
+            self.core.sm(|r| r.release(h));
             g.wakers.remove(&h);
         }
     }
@@ -261,6 +231,11 @@ mod tests {
 
     use super::*;
 
+    fn new_core() -> Arc<Core> {
+        let replay = ReplayHandle::new(RunId::nil(), vec![]);
+        Core::new(RunId::nil(), Deps::default(), replay)
+    }
+
     fn sleep_cmd(core: &Arc<Core>, key: &str) -> CmdFuture {
         let command = Command::Sleep {
             dur: std::time::Duration::from_secs(1),
@@ -270,7 +245,7 @@ mod tests {
 
     #[test]
     fn a_second_command_with_a_live_key_faults_instead_of_replacing_it() {
-        let core = Core::new(RunId::nil(), Deps::default(), vec![]);
+        let core = new_core();
         let mut cx = Context::from_waker(noop_waker_ref());
         let mut first = sleep_cmd(&core, "k");
         assert!(Pin::new(&mut first).poll(&mut cx).is_pending());
@@ -279,18 +254,19 @@ mod tests {
             Pin::new(&mut second).poll(&mut cx),
             Poll::Ready(Err(WorkflowError::Fault(_)))
         ));
-        assert!(core.fault().unwrap().contains("share the key `k`"));
+        let fault = core.sm(|r| r.fault().map(str::to_string)).unwrap();
+        assert!(fault.contains("share the key `k`"));
     }
 
     #[test]
     fn a_dropped_future_leaves_the_frontier() {
-        let core = Core::new(RunId::nil(), Deps::default(), vec![]);
+        let core = new_core();
         let mut cx = Context::from_waker(noop_waker_ref());
         let mut fut = sleep_cmd(&core, "k");
         assert!(Pin::new(&mut fut).poll(&mut cx).is_pending());
-        assert_eq!(core.frontier().len(), 1);
+        assert_eq!(core.sm(|r| r.frontier()).len(), 1);
         drop(fut);
-        assert!(core.frontier().is_empty());
+        assert!(core.sm(|r| r.frontier()).is_empty());
     }
 
     #[test]
