@@ -12,7 +12,7 @@ DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus   # r
 docker compose up -d                      # postgres:17 + redis:7 for the examples
 ```
 
-Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-spi`, `durable-runtime`, `durable-memory` and `durable-macros`.
+Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-sm`, `durable-spi`, `durable-runtime`, `durable-testkit`, `durable-memory` and `durable-macros`.
 
 ## Conventions
 

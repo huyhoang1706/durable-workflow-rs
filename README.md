@@ -39,13 +39,15 @@ streams an LLM answer to a browser while a step runs.
 
 ```
 crates/
-  durable-sm/         sans-IO replay state machine and event model; no tokio, no IO (embedded by SDK bindings)
-  durable-spi/       ids, records, errors, every plugin trait (no infrastructure); re-exports the event model
+  durable-sm/         sans-IO replay state machine, engine decisions and event model; no tokio, no IO
+                      (embedded by language SDK bindings)
+  durable-spi/        ids, records, errors, every plugin trait (no infrastructure); re-exports the event model
   durable-runtime/    replay engine (async + sync drivers), contexts, compute pool, Worker, Client
   durable-macros/     #[workflow], #[step]
   durable-api/        axum ops router (mountable or standalone)
   durable-cli/        the `durable` binary
-  durable-testkit/    conformance suites for plugin authors, ManualClock
+  durable-testkit/    conformance suites for plugin authors, ManualClock, and the replay conformance corpus
+                      every language SDK must pass
   durable-workflow/   facade; features: memory (default), macros (default), postgres, redis, standalone,
                       observable (local JSON logs + spans), otel (opt-in OpenTelemetry)
 plugins/
@@ -118,6 +120,9 @@ Replay re-runs your workflow function against the recorded log, so the body must
   `ctx.uuid()` is a UUIDv7 stamped with `ctx.now()`, strictly increasing within a run.
 - Await only `ctx` futures. Awaiting anything else (a raw `tokio::sleep`, a channel) is detected and
   reported as an engine fault.
+- Race `ctx` futures with `tokio::select! { biased; .. }`. An unbiased `select!` polls its branches in
+  random order. Replay still matches by key and picks the same winner, but the commands are issued in
+  a different order each time.
 - Steps are matched by key: your name plus an occurrence counter (`charge`, `charge#1`). Names of
   steps, sleeps, waits and hooks must be non-empty and may not contain `#`, `[` or `]`, which
   generated keys use; such a name faults the run. Renaming a step, or changing its kind, for an
@@ -294,6 +299,10 @@ and the queue's concurrency, throttle and lease semantics.
 docker compose up -d    # postgres:17 + redis:7 for the examples
 ```
 
+The replay conformance corpus (`crates/durable-testkit/corpus`) pins how every history replays. A change to
+replay behaviour fails `replay_corpus`; if the change is intended, regenerate the corpus with
+`DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus` and review the diff.
+
 The chaos suite (`crates/durable-workflow/tests/chaos.rs`) runs on real Postgres + Redis with
 several workers in one process: killing workers mid-step, `FLUSHALL` mid-flight, concurrency limits
 across workers, throttle spacing and start-time rate limits, and streaming steps through worker
@@ -331,3 +340,9 @@ Added after iteration 1:
 Added in iteration 2 ([plan](docs/plans/iter2.md)): streaming (above), the `Observer` slot and
 `plugins/durable-otel`, the local-first `observable` module, `trace_context` on runs (Postgres
 migration `0002`), and `ctx.is_replaying()`. Deferred work is tracked in [docs/BACKLOG.md](docs/BACKLOG.md).
+
+In progress, iteration 3 ([plan](docs/plans/iter3-sansio-core.md)): TypeScript and Python SDKs built on one
+Rust core.
+- Done: the sans-IO replay core and the engine's decisions in `durable-sm`, and the replay
+  conformance corpus. Rust workflows already run on that core.
+- Next: the Node binding.

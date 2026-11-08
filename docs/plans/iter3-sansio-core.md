@@ -1,4 +1,8 @@
-# Iteration 3 (draft): a sans-IO core for TS/JS and Python SDKs
+# Iteration 3: a sans-IO core for TS/JS and Python SDKs
+
+> Status: P0–P2 are done; P3 (Node binding) is next. The design sections below are the original sketch. The
+> "as built" sections record where the code differs. `durable-core` was renamed `durable-spi` after P1 (#9); the
+> as-built notes keep the name used at the time.
 
 ## Context
 
@@ -31,7 +35,8 @@ Decisions confirmed with the user:
 ## Goals
 
 1. A crate, **`durable-sm`**, holding all replay and decision logic, with no tokio, no futures, no IO
-   and no `Arc`. Its dependencies: `durable-core` types, `serde`, `serde_json`, `chrono`, `rand_chacha`, `uuid`.
+   and no `Arc`. Its dependencies: `serde`, `serde_json`, `chrono`, `rand_chacha`, `uuid` (it owns the event model
+   itself, see "P0 as built").
 2. Every input and output type is `Serialize + Deserialize`, so bindings can pass structs (napi/PyO3)
    or JSON (HTTP, WASM) without hand-written glue.
 3. The Rust SDK becomes the first client of `durable-sm`, with no user-visible change. The existing test
@@ -288,7 +293,7 @@ regression. Where the code differs from the sketch above:
 
 - **`durable-sm` also owns the event model and `RetryPolicy`.** `durable-core` depends on tokio and futures, so
   the replayer cannot depend on it. `Event`, `EventKind` and `WaitKind` moved to `durable-sm`; `durable-core`
-  and `durable_runtime::retry` re-export them, so every public path is unchanged. `ci.sh` fails if `durable-sm`
+  (now `durable-spi`) and `durable_runtime::retry` re-export them, so every public path is unchanged. `ci.sh` fails if `durable-sm`
   ever pulls in tokio, futures or async-trait.
 - **Keys are reserved apart from issuing.** The API is `user_key(name)` / `key_for(name)`, then
   `issue(key, Command) -> Handle`. Rust builders take their key when `ctx.step(..)` is called but issue the

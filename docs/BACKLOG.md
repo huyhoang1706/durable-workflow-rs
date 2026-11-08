@@ -1,12 +1,12 @@
 # Backlog
 
-Deferred work, grouped by area. Each entry says where it came from: [iter1](plans/iter1.md) or [iter2](plans/iter2.md).
+Deferred work, grouped by area. Each entry says where it came from: [iter1](plans/iter1.md) or [iter2](plans/iter2.md). Iteration 3 (language SDKs) is still in progress; its open items are in [its plan](plans/iter3-sansio-core.md).
 
 ## Observability
 
 - **DuckDB observability store** (`plugins/durable-duckdb`), from iter2.
   - A local, zero-infra sink for spans, logs and metrics, written to a `.duckdb` file.
-  - Plugged in through `OtelConfig` programmatic exporters (`.span_exporter`, `.log_exporter`, `.metric_reader`), so the runtime needs no changes.
+  - Plugged in through `OtelConfig` programmatic exporters (`.span_exporter`, `.log_exporter`, `.metric_exporter`), so the runtime needs no changes.
   - Add `durable traces|logs` CLI queries, for example all spans of a run and the logs of a step attempt.
 - **ClickHouse for production**, from iter2.
   - Path: OTLP → OpenTelemetry Collector → ClickHouse exporter.
