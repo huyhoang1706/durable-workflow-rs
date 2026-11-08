@@ -1,0 +1,25 @@
+{
+  "name": "sequential_steps",
+  "description": "Doubles the input in step `double`, adds one in step `inc`, returns the result.",
+  "workflow": "add",
+  "input": 20,
+  "run_id": "01a1bb5e-f43b-758d-adaa-1d9830e57cf9",
+  "history": [
+    {"run_id":"01a1bb5e-f43b-758d-adaa-1d9830e57cf9","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":20}},
+    {"run_id":"01a1bb5e-f43b-758d-adaa-1d9830e57cf9","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"double","output":40}},
+    {"run_id":"01a1bb5e-f43b-758d-adaa-1d9830e57cf9","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"inc","output":41}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"double","key":"double"},
+    {"op":"issue","key":"double","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"double","resolution":{"type":"step_succeeded","value":40}}]},
+    {"op":"user_key","name":"inc","key":"inc"},
+    {"op":"issue","key":"inc","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"inc","resolution":{"type":"step_succeeded","value":41}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":41}
+}

@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 pub struct RetryPolicy {
     /// Total attempts, including the first.
     pub max_attempts: u32,
+    #[serde(rename = "initial_delay_ms", with = "crate::ms")]
     pub initial_delay: Duration,
     pub factor: u32,
+    #[serde(rename = "max_delay_ms", with = "crate::ms")]
     pub max_delay: Duration,
 }
 

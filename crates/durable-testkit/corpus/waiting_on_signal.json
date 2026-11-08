@@ -1,0 +1,27 @@
+{
+  "name": "waiting_on_signal",
+  "description": "Runs step `prepare`, then waits for signal `approval`. Captured while waiting: the wait is the frontier and the body has not finished.",
+  "workflow": "pending",
+  "input": null,
+  "run_id": "01a1bb5e-f51b-771d-a644-96f967033cd6",
+  "history": [
+    {"run_id":"01a1bb5e-f51b-771d-a644-96f967033cd6","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f51b-771d-a644-96f967033cd6","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"prepare","output":"ready"}},
+    {"run_id":"01a1bb5e-f51b-771d-a644-96f967033cd6","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"approval","kind":"signal","name":"approval","filter":null,"timeout_at":null}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"prepare","key":"prepare"},
+    {"op":"issue","key":"prepare","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"prepare","resolution":{"type":"step_succeeded","value":"ready"}}]},
+    {"op":"user_key","name":"approval","key":"approval"},
+    {"op":"issue","key":"approval","command":{"type":"wait","kind":"signal","name":"approval","filter":null,"timeout_ms":null}},
+    {"op":"advance","result":"run_code"},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [
+    {"type":"wait","key":"approval","kind":"signal","name":"approval","filter":null,"timeout_ms":null,"started":true,"timeout_at":null}
+  ],
+  "fault": null,
+  "result": null
+}

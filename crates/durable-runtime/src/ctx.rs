@@ -314,9 +314,9 @@ impl<T: DeserializeOwned + Send + 'static> Future for StepBuilder<T> {
                 Box::pin(async move {
                     let command = Command::Step { policy, timeout };
                     match CmdFuture::step(core.clone(), key.clone(), command, start).await? {
-                        Resolution::Step { result: Ok(v) } => decode(&core, &key, v),
-                        Resolution::Step { result: Err(f) } => {
-                            Err(WorkflowError::Step(step_error(f)))
+                        Resolution::StepSucceeded { value } => decode(&core, &key, value),
+                        Resolution::StepFailed { failure } => {
+                            Err(WorkflowError::Step(step_error(failure)))
                         }
                         other => Err(unexpected(&core, &key, &other)),
                     }

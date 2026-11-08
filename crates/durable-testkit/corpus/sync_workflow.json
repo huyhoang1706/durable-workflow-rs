@@ -1,0 +1,34 @@
+{
+  "name": "sync_workflow",
+  "description": "A blocking workflow: steps `a` (n + 1) and `b` (n * 2) in parallel, a 60 s sleep `cool-down`, then step `sum` adds them.",
+  "workflow": "sync-sum",
+  "input": 5,
+  "run_id": "01a1bb5e-f50d-757f-ab41-c75d52238109",
+  "history": [
+    {"run_id":"01a1bb5e-f50d-757f-ab41-c75d52238109","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":5}},
+    {"run_id":"01a1bb5e-f50d-757f-ab41-c75d52238109","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"a","output":6}},
+    {"run_id":"01a1bb5e-f50d-757f-ab41-c75d52238109","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"b","output":10}},
+    {"run_id":"01a1bb5e-f50d-757f-ab41-c75d52238109","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"timer_scheduled","key":"cool-down","fire_at":"2030-01-01T00:01:00Z"}},
+    {"run_id":"01a1bb5e-f50d-757f-ab41-c75d52238109","seq":5,"at":"2030-01-01T00:01:00Z","kind":{"type":"timer_fired","key":"cool-down"}},
+    {"run_id":"01a1bb5e-f50d-757f-ab41-c75d52238109","seq":6,"at":"2030-01-01T00:01:00Z","kind":{"type":"step_succeeded","key":"sum","output":16}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"a","key":"a"},
+    {"op":"user_key","name":"b","key":"b"},
+    {"op":"issue","key":"a","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"issue","key":"b","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"a","resolution":{"type":"step_succeeded","value":6}}]},
+    {"op":"advance","result":"run_code","resolved":[{"key":"b","resolution":{"type":"step_succeeded","value":10}}]},
+    {"op":"user_key","name":"cool-down","key":"cool-down"},
+    {"op":"issue","key":"cool-down","command":{"type":"sleep","dur_ms":60000}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"cool-down","resolution":{"type":"slept"}}]},
+    {"op":"user_key","name":"sum","key":"sum"},
+    {"op":"issue","key":"sum","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"sum","resolution":{"type":"step_succeeded","value":16}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":16}
+}

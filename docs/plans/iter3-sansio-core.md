@@ -1,4 +1,8 @@
-# Iteration 3 (draft): a sans-IO core for TS/JS and Python SDKs
+# Iteration 3: a sans-IO core for TS/JS and Python SDKs
+
+> Status: P0–P2 are done; P3 (Node binding) is next. The design sections below are the original sketch. The
+> "as built" sections record where the code differs. `durable-core` was renamed `durable-spi` after P1 (#9); the
+> as-built notes keep the name used at the time.
 
 ## Context
 
@@ -31,7 +35,8 @@ Decisions confirmed with the user:
 ## Goals
 
 1. A crate, **`durable-sm`**, holding all replay and decision logic, with no tokio, no futures, no IO
-   and no `Arc`. Its dependencies: `durable-core` types, `serde`, `serde_json`, `chrono`, `rand_chacha`, `uuid`.
+   and no `Arc`. Its dependencies: `serde`, `serde_json`, `chrono`, `rand_chacha`, `uuid` (it owns the event model
+   itself, see "P0 as built").
 2. Every input and output type is `Serialize + Deserialize`, so bindings can pass structs (napi/PyO3)
    or JSON (HTTP, WASM) without hand-written glue.
 3. The Rust SDK becomes the first client of `durable-sm`, with no user-visible change. The existing test
@@ -274,7 +279,7 @@ or, for sync `def` steps, in a thread pool.
 |---|---|---|
 | P0 ✅ | Create `crates/durable-sm`. Move `Core` → `Replayer` (handles, `advance`, no wakers/closures/deps). `CmdFuture` becomes a ~30-line adapter: handle + waker map in `durable-runtime`. | Whole existing suite passes unchanged. `durable-sm` has no tokio/futures dependency (CI check). |
 | P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
-| P2 | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
+| P2 ✅ | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
 | P3 | `bindings/node` (napi-rs): embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/node-onboarding` passes the conformance corpus and a crash/resume chaos test. |
 | P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
@@ -288,7 +293,7 @@ regression. Where the code differs from the sketch above:
 
 - **`durable-sm` also owns the event model and `RetryPolicy`.** `durable-core` depends on tokio and futures, so
   the replayer cannot depend on it. `Event`, `EventKind` and `WaitKind` moved to `durable-sm`; `durable-core`
-  and `durable_runtime::retry` re-export them, so every public path is unchanged. `ci.sh` fails if `durable-sm`
+  (now `durable-spi`) and `durable_runtime::retry` re-export them, so every public path is unchanged. `ci.sh` fails if `durable-sm`
   ever pulls in tokio, futures or async-trait.
 - **Keys are reserved apart from issuing.** The API is `user_key(name)` / `key_for(name)`, then
   `issue(key, Command) -> Handle`. Rust builders take their key when `ctx.step(..)` is called but issue the
@@ -332,6 +337,45 @@ sketch above:
   `step_outcome` takes `Result<Value, (String, ErrorClass)>` instead.
 - **Fault, cancel and "body finished" checks stay in the engine,** ahead of `decide`. They depend on driver and
   store state, not on the frontier.
+
+## P2 as built
+
+The corpus lives in `crates/durable-testkit/corpus/*.json`, 22 cases. Each one holds a normalized history written by
+a real run on the memory backend, and what replaying that history did. Where the code differs from the sketch above:
+
+- **The contract is a trace of replayer calls, recorded by `durable-sm` itself.** `Replayer::record()` turns on a
+  log of `TraceOp`s: every `user_key` / `key_for` / `check_name` with the key it returned, every `issue` and
+  `release`, every `random_u64` / `uuid` with its value, host `set_fault`, `interrupt` and `cancel`, and every
+  `advance` with its result and the resolutions it produced (by key). A case ends with the `frontier`, `fault` and
+  `result` the replay left behind. Recording lives in the replayer rather than in each host, so every binding gets
+  the same trace for free and can compare its own replay against the corpus.
+- **Two checks, both in CI.** `durable_testkit::corpus::play` drives a bare `Replayer` with the host calls from a
+  trace and checks each answer: a binding runs the same check through its FFI layer. The `replay_corpus` test in
+  `durable-runtime` replays each committed history through its Rust workflow and must reproduce the trace exactly.
+  `DURABLE_UPDATE_CORPUS=1` reruns the workflows and rewrites the corpus.
+- **`Worker::replay(workflow, run_id, input, history)`** (`#[doc(hidden)]`) replays a stored log offline with
+  recording on. `rebuild` and it share one loop, `driver::replay`, so the corpus records exactly what the engine does.
+- **Errors are compared by kind, as Temporal (failure type) and Restate (failure code) do.** `result` is
+  `{"ok": value}` or `{"err": {"kind", "message"}}`. `WorkflowFailure` and `FailureKind` (`failed`, `step`,
+  `hook_conflict`, `cancelled`, `interrupted`, `fault`) live in `durable-sm`, and `WorkflowError::failure()` maps the
+  Rust errors onto them. Bindings must match `ok` values and `err` kinds. They do not have to match messages the host
+  writes (`err`, `set_fault`, host faults). Faults raised by the replayer come from the shared core, so their
+  messages must match.
+- **The wire shape was settled before any binding exists**, following Restate's WASM bindings:
+  - Internally tagged enums everywhere: a step resolves to `step_succeeded { value }` or
+    `step_failed { failure: { message, retryable } }`, named after its history events, instead of serde's
+    `{"Ok": …}`.
+  - Durations are whole milliseconds in `*_ms` fields (`dur_ms`, `timeout_ms`, `initial_delay_ms`, `max_delay_ms`,
+    `after_ms`) instead of `{secs, nanos}`.
+  - Timestamps stay RFC 3339 strings.
+
+  None of these types is stored, so no data migration is needed.
+- **Random values are strings in the trace**, because JSON numbers above 2^53 lose precision in JavaScript.
+- **Unbiased `tokio::select!` makes the trace nondeterministic.** It polls its branches in random order, so the
+  race's commands were issued in a different order on each replay. Replay is still correct, because it matches by
+  key, but the frontier order and the order of registered events changed. The corpus race uses `biased;`.
+- **Not covered yet:** live-phase interaction (`push_live` after `Live`), hook token conflicts (they need two runs)
+  and `RunRetried` (the corpus stores normalized histories, and `normalize` runs in the Rust shell for every SDK).
 
 ## Open questions
 

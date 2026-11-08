@@ -1,0 +1,26 @@
+{
+  "name": "hook_minted_token",
+  "description": "Creates hook `inbox` without a token (the engine mints one) and returns the first payload.",
+  "workflow": "inbox",
+  "input": null,
+  "run_id": "01a1bb5e-f4d1-72cd-8f0e-66c203b2025c",
+  "history": [
+    {"run_id":"01a1bb5e-f4d1-72cd-8f0e-66c203b2025c","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f4d1-72cd-8f0e-66c203b2025c","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"hook_created","key":"inbox","token":"01a1bb5e-f4d1-72cd-8f0e-66c4b29f2440","conflict":false}},
+    {"run_id":"01a1bb5e-f4d1-72cd-8f0e-66c203b2025c","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"inbox[recv]","kind":"hook","name":"01a1bb5e-f4d1-72cd-8f0e-66c4b29f2440","filter":null,"timeout_at":null}},
+    {"run_id":"01a1bb5e-f4d1-72cd-8f0e-66c203b2025c","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"signal_received","key":"inbox[recv]","signal_id":"01a1bb5e-f4d8-77a4-8b0d-aafb33ff84e3","payload":"hi"}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"inbox","key":"inbox"},
+    {"op":"issue","key":"inbox","command":{"type":"hook","token":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"inbox","resolution":{"type":"hook","token":"01a1bb5e-f4d1-72cd-8f0e-66c4b29f2440","conflict":false}}]},
+    {"op":"key_for","name":"inbox[recv]","key":"inbox[recv]"},
+    {"op":"issue","key":"inbox[recv]","command":{"type":"wait","kind":"hook","name":"01a1bb5e-f4d1-72cd-8f0e-66c4b29f2440","filter":null,"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"inbox[recv]","resolution":{"type":"signal","payload":"hi"}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":"hi"}
+}

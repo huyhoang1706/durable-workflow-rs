@@ -4,13 +4,14 @@ use std::{
 };
 
 use durable_spi::{
-    Backend, ClaimLimits, Commit, ComputePool, EventKind, Lease, Metric, QueueScope, RunId,
+    Backend, ClaimLimits, Commit, ComputePool, Event, EventKind, Lease, Metric, QueueScope, RunId,
     ThrottleLimit, WorkflowDefinition,
 };
 use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json::Value;
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore, watch},
     task::{AbortHandle, JoinHandle},
@@ -18,6 +19,8 @@ use tokio::{
 
 use crate::{
     Deps, DepsBuilder, ThreadPool, WfAsyncCtx, WfSyncCtx, WorkflowError, WorkflowOptions, channels,
+    core::Core,
+    driver::{self, DriverStatus},
     engine::{self, EngineEnv, Outcome, notify_run},
     stream::{StreamLimits, close_run_streams},
     workflow::{AsyncFn, ErasedWorkflow, IntoWorkflow, SyncFn},
@@ -345,6 +348,58 @@ impl Worker {
         tasks.push(tokio::spawn(reconciler(sh.clone(), rx)));
         WorkerHandle { shared: sh, tasks }
     }
+
+    /// Replay a stored `history` through the registered `workflow` the way
+    /// the engine does, with no store and no step execution, and record
+    /// every replayer call. Returns `None` for an unknown workflow.
+    ///
+    /// The replay conformance corpus (`durable_testkit::corpus`) is written
+    /// and checked with this.
+    #[doc(hidden)]
+    pub async fn replay(
+        &self,
+        workflow: &str,
+        run_id: RunId,
+        input: Value,
+        history: Vec<Event>,
+    ) -> Option<Replay> {
+        let wf = self
+            .shared
+            .workflows
+            .iter()
+            .find(|w| w.name() == workflow)?;
+        let core = Core::new(
+            run_id,
+            self.shared.env.deps.clone(),
+            crate::history::normalize(history),
+        );
+        core.record();
+        let mut driver = wf.start(core.clone(), input);
+        let status = driver::replay(&core, &mut driver).await;
+        let replay = Replay {
+            trace: core.take_trace(),
+            frontier: core.frontier(),
+            fault: core.fault(),
+            result: match status {
+                DriverStatus::Pending => None,
+                DriverStatus::Finished(r) => Some(r.map_err(|e| e.failure())),
+            },
+        };
+        driver.interrupt();
+        Some(replay)
+    }
+}
+
+/// What [`Worker::replay`] saw.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Replay {
+    pub trace: Vec<durable_sm::TraceOp>,
+    /// Commands still unresolved once history ran out.
+    pub frontier: Vec<durable_sm::Pending>,
+    pub fault: Option<String>,
+    /// `None` while the body still waits on the frontier.
+    pub result: Option<Result<Value, durable_sm::WorkflowFailure>>,
 }
 
 pub struct WorkerHandle {

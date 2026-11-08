@@ -1,0 +1,17 @@
+{
+  "name": "invalid_name",
+  "description": "Calls a step named `bad#name`. `#` is reserved for generated keys, so the run faults.",
+  "workflow": "bad-name",
+  "input": null,
+  "run_id": "01a1bb5e-f523-73d7-857b-5062d73e83c8",
+  "history": [
+    {"run_id":"01a1bb5e-f523-73d7-857b-5062d73e83c8","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"bad#name","key":"bad#name"}
+  ],
+  "frontier": [],
+  "fault": "invalid name `bad#name`: names must be non-empty and must not contain `#`, `[` or `]`",
+  "result": {"err":{"kind":"fault","message":"engine fault: invalid name `bad#name`: names must be non-empty and must not contain `#`, `[` or `]`"}}
+}

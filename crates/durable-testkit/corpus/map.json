@@ -1,0 +1,30 @@
+{
+  "name": "map",
+  "description": "Squares [1, 2, 3] with a parallel map named `square`; the keys are `square[0]`, `square[1]`, `square[2]`.",
+  "workflow": "squares",
+  "input": null,
+  "run_id": "01a1bb5e-f4f4-77f3-b582-41f752265c2f",
+  "history": [
+    {"run_id":"01a1bb5e-f4f4-77f3-b582-41f752265c2f","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f4f4-77f3-b582-41f752265c2f","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"square[0]","output":1}},
+    {"run_id":"01a1bb5e-f4f4-77f3-b582-41f752265c2f","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"square[1]","output":4}},
+    {"run_id":"01a1bb5e-f4f4-77f3-b582-41f752265c2f","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"square[2]","output":9}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"check_name","name":"square"},
+    {"op":"key_for","name":"square[0]","key":"square[0]"},
+    {"op":"key_for","name":"square[1]","key":"square[1]"},
+    {"op":"key_for","name":"square[2]","key":"square[2]"},
+    {"op":"issue","key":"square[0]","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"issue","key":"square[1]","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"issue","key":"square[2]","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"square[0]","resolution":{"type":"step_succeeded","value":1}}]},
+    {"op":"advance","result":"run_code","resolved":[{"key":"square[1]","resolution":{"type":"step_succeeded","value":4}}]},
+    {"op":"advance","result":"run_code","resolved":[{"key":"square[2]","resolution":{"type":"step_succeeded","value":9}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":[1,4,9]}
+}

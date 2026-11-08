@@ -28,5 +28,5 @@ pub use pool::ThreadPool;
 pub use retry::RetryPolicy;
 pub use stream::StreamWriter;
 pub use watch::{RunUpdate, StreamBody, StreamItem, StreamReadBuilder, WatchBuilder};
-pub use worker::{BuildError, Worker, WorkerBuilder, WorkerHandle};
+pub use worker::{BuildError, Replay, Worker, WorkerBuilder, WorkerHandle};
 pub use workflow::{AsyncWorkflow, IntoWorkflow, SyncWorkflow, WorkflowOptions};

@@ -1,0 +1,25 @@
+{
+  "name": "deterministic_helpers",
+  "description": "Draws `random_u64` and `uuid`, sleeps 10 s as `nap`, draws another `uuid`, and returns all three (the number as a string) with `now`.",
+  "workflow": "det",
+  "input": null,
+  "run_id": "01a1bb5e-f4fd-7683-9e09-505da6a864e5",
+  "history": [
+    {"run_id":"01a1bb5e-f4fd-7683-9e09-505da6a864e5","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f4fd-7683-9e09-505da6a864e5","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"timer_scheduled","key":"nap","fire_at":"2030-01-01T00:00:10Z"}},
+    {"run_id":"01a1bb5e-f4fd-7683-9e09-505da6a864e5","seq":3,"at":"2030-01-01T00:00:10Z","kind":{"type":"timer_fired","key":"nap"}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"random","value":"1762425966535673417"},
+    {"op":"uuid","value":"01b8dac5-b400-765a-a446-7a9e236d3872"},
+    {"op":"user_key","name":"nap","key":"nap"},
+    {"op":"issue","key":"nap","command":{"type":"sleep","dur_ms":10000}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"nap","resolution":{"type":"slept"}}]},
+    {"op":"uuid","value":"01b8dac5-db10-74ec-9b62-d3eec96f5bac"},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":{"first":"01b8dac5-b400-765a-a446-7a9e236d3872","now":"2030-01-01T00:00:10Z","random":"1762425966535673417","second":"01b8dac5-db10-74ec-9b62-d3eec96f5bac"}}
+}

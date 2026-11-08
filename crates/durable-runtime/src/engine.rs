@@ -29,7 +29,7 @@ use tracing::Instrument;
 use crate::{
     Deps, StepError, WorkflowError, channels,
     core::{Advance, Core, Pending, StepStart},
-    driver::{Driver, DriverStatus},
+    driver::{self, Driver, DriverStatus},
     history,
     step::{self, StepInfo},
     stream::{StreamHub, StreamLimits, close_run_streams},
@@ -311,17 +311,7 @@ impl Exec<'_> {
         }
         self.core = Core::new(self.run.id, self.env.deps.clone(), self.history.clone());
         let mut driver = self.wf.start(self.core.clone(), self.run.input.clone());
-        self.status = DriverStatus::Pending;
-        // The poll after the newest event is live (`is_replaying` is false): it
-        // is the first time the body sees that event, unless an earlier
-        // execution crashed before acting on it, in which case acting twice
-        // beats never acting.
-        while self.core.advance() == Advance::RunCode {
-            self.status = driver.poll().await;
-            if self.core.fault().is_some() {
-                break;
-            }
-        }
+        self.status = driver::replay(&self.core, &mut driver).await;
         self.driver = Some(driver);
     }
 

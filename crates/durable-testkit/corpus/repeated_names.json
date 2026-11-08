@@ -1,0 +1,29 @@
+{
+  "name": "repeated_names",
+  "description": "Calls step `item` three times in a loop, returning i * 10; the keys are `item`, `item#1`, `item#2`.",
+  "workflow": "loop",
+  "input": null,
+  "run_id": "01a1bb5e-f44d-72af-8a32-497d1ece9105",
+  "history": [
+    {"run_id":"01a1bb5e-f44d-72af-8a32-497d1ece9105","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f44d-72af-8a32-497d1ece9105","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"item","output":0}},
+    {"run_id":"01a1bb5e-f44d-72af-8a32-497d1ece9105","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"item#1","output":10}},
+    {"run_id":"01a1bb5e-f44d-72af-8a32-497d1ece9105","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"item#2","output":20}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"item","key":"item"},
+    {"op":"issue","key":"item","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"item","resolution":{"type":"step_succeeded","value":0}}]},
+    {"op":"user_key","name":"item","key":"item#1"},
+    {"op":"issue","key":"item#1","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"item#1","resolution":{"type":"step_succeeded","value":10}}]},
+    {"op":"user_key","name":"item","key":"item#2"},
+    {"op":"issue","key":"item#2","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"item#2","resolution":{"type":"step_succeeded","value":20}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":[0,10,20]}
+}

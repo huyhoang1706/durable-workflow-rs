@@ -1,0 +1,26 @@
+{
+  "name": "race_signal_wins",
+  "description": "Races signal `approval` against a 60 s sleep `deadline`. The signal arrives first, the sleep is released, and it returns `signal <payload>`.",
+  "workflow": "race",
+  "input": null,
+  "run_id": "01a1bb5e-f4af-75a1-8cc3-2509916d52a6",
+  "history": [
+    {"run_id":"01a1bb5e-f4af-75a1-8cc3-2509916d52a6","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f4af-75a1-8cc3-2509916d52a6","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"approval","kind":"signal","name":"approval","filter":null,"timeout_at":null}},
+    {"run_id":"01a1bb5e-f4af-75a1-8cc3-2509916d52a6","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"timer_scheduled","key":"deadline","fire_at":"2030-01-01T00:01:00Z"}},
+    {"run_id":"01a1bb5e-f4af-75a1-8cc3-2509916d52a6","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"signal_received","key":"approval","signal_id":"01a1bb5e-f4b6-76e1-8b13-f8f36dc91b15","payload":{"by":"ann"}}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"approval","key":"approval"},
+    {"op":"user_key","name":"deadline","key":"deadline"},
+    {"op":"issue","key":"approval","command":{"type":"wait","kind":"signal","name":"approval","filter":null,"timeout_ms":null}},
+    {"op":"issue","key":"deadline","command":{"type":"sleep","dur_ms":60000}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"approval","resolution":{"type":"signal","payload":{"by":"ann"}}}]},
+    {"op":"release","key":"deadline"},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":"signal {\"by\":\"ann\"}"}
+}

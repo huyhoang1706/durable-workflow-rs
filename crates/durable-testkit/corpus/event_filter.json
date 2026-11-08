@@ -1,0 +1,22 @@
+{
+  "name": "event_filter",
+  "description": "Waits for event `order.paid` filtered on `{\"order_id\": <input>}` and returns its `amount`. An event for another order arrives first and is ignored.",
+  "workflow": "order",
+  "input": 2,
+  "run_id": "01a1bb5e-f4e3-70de-aa12-3b6a661d9fe3",
+  "history": [
+    {"run_id":"01a1bb5e-f4e3-70de-aa12-3b6a661d9fe3","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":2}},
+    {"run_id":"01a1bb5e-f4e3-70de-aa12-3b6a661d9fe3","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"order.paid","kind":"event","name":"order.paid","filter":{"order_id":2},"timeout_at":null}},
+    {"run_id":"01a1bb5e-f4e3-70de-aa12-3b6a661d9fe3","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"signal_received","key":"order.paid","signal_id":"01a1bb5e-f4ea-7067-8906-e3c32987973c","payload":{"amount":50,"order_id":2}}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"order.paid","key":"order.paid"},
+    {"op":"issue","key":"order.paid","command":{"type":"wait","kind":"event","name":"order.paid","filter":{"order_id":2},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"order.paid","resolution":{"type":"signal","payload":{"amount":50,"order_id":2}}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":50}
+}
