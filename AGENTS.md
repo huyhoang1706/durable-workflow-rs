@@ -8,6 +8,7 @@ cargo test --workspace --all-features     # tests only
 cargo test -p durable-runtime --test engine_async            # one integration test file
 cargo test -p durable-runtime --test engine_async <name>     # one test
 cargo test -p durable-workflow --test compile_fail           # trybuild UI tests for the macros (tests/ui/*.stderr)
+DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus   # rewrite the replay conformance corpus (durable-testkit/corpus)
 docker compose up -d                      # postgres:17 + redis:7 for the examples
 ```
 

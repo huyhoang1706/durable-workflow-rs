@@ -1,0 +1,21 @@
+{
+  "name": "step_failure_recovered",
+  "description": "Step `bad` (no retries) fails with `always`; the workflow catches the error and returns `recovered from always`.",
+  "workflow": "recover",
+  "input": null,
+  "run_id": "01a1bb5e-f45f-772b-af8c-5a9923ae5f49",
+  "history": [
+    {"run_id":"01a1bb5e-f45f-772b-af8c-5a9923ae5f49","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f45f-772b-af8c-5a9923ae5f49","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_failed","key":"bad","attempt":1,"error":"always","retryable":true,"retry_at":null}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"bad","key":"bad"},
+    {"op":"issue","key":"bad","command":{"type":"step","policy":{"max_attempts":1,"initial_delay_ms":0,"factor":1,"max_delay_ms":0},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"bad","resolution":{"type":"step_failed","failure":{"message":"always","retryable":true}}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":"recovered from always"}
+}

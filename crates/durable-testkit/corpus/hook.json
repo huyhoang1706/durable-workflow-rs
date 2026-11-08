@@ -1,0 +1,35 @@
+{
+  "name": "hook",
+  "description": "Creates hook `callback` with token `corpus-hook`, receives two payloads (keys `callback[recv]`, `callback[recv]#1`), disposes it (`callback[dispose]`), returns their sum.",
+  "workflow": "hooked",
+  "input": null,
+  "run_id": "01a1bb5e-f4c0-750f-a75f-d13b3a1e2594",
+  "history": [
+    {"run_id":"01a1bb5e-f4c0-750f-a75f-d13b3a1e2594","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f4c0-750f-a75f-d13b3a1e2594","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"hook_created","key":"callback","token":"corpus-hook","conflict":false}},
+    {"run_id":"01a1bb5e-f4c0-750f-a75f-d13b3a1e2594","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"callback[recv]","kind":"hook","name":"corpus-hook","filter":null,"timeout_at":null}},
+    {"run_id":"01a1bb5e-f4c0-750f-a75f-d13b3a1e2594","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"signal_received","key":"callback[recv]","signal_id":"01a1bb5e-f4c6-7555-8666-5679086285e5","payload":1}},
+    {"run_id":"01a1bb5e-f4c0-750f-a75f-d13b3a1e2594","seq":5,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"callback[recv]#1","kind":"hook","name":"corpus-hook","filter":null,"timeout_at":null}},
+    {"run_id":"01a1bb5e-f4c0-750f-a75f-d13b3a1e2594","seq":6,"at":"2030-01-01T00:00:00Z","kind":{"type":"signal_received","key":"callback[recv]#1","signal_id":"01a1bb5e-f4c7-777d-be9e-5ee00a32e626","payload":2}},
+    {"run_id":"01a1bb5e-f4c0-750f-a75f-d13b3a1e2594","seq":7,"at":"2030-01-01T00:00:00Z","kind":{"type":"hook_disposed","key":"callback[dispose]","token":"corpus-hook"}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"callback","key":"callback"},
+    {"op":"issue","key":"callback","command":{"type":"hook","token":"corpus-hook"}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"callback","resolution":{"type":"hook","token":"corpus-hook","conflict":false}}]},
+    {"op":"key_for","name":"callback[recv]","key":"callback[recv]"},
+    {"op":"issue","key":"callback[recv]","command":{"type":"wait","kind":"hook","name":"corpus-hook","filter":null,"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"callback[recv]","resolution":{"type":"signal","payload":1}}]},
+    {"op":"key_for","name":"callback[recv]","key":"callback[recv]#1"},
+    {"op":"issue","key":"callback[recv]#1","command":{"type":"wait","kind":"hook","name":"corpus-hook","filter":null,"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"callback[recv]#1","resolution":{"type":"signal","payload":2}}]},
+    {"op":"key_for","name":"callback[dispose]","key":"callback[dispose]"},
+    {"op":"issue","key":"callback[dispose]","command":{"type":"hook_dispose","token":"corpus-hook"}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"callback[dispose]","resolution":{"type":"disposed"}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":3}
+}

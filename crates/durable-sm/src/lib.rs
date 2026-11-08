@@ -4,14 +4,17 @@
 
 mod decide;
 mod event;
+mod ms;
 mod replayer;
 mod retry;
 mod time;
+mod trace;
 
 pub use decide::*;
 pub use event::*;
 pub use replayer::*;
 pub use retry::RetryPolicy;
 pub use time::{far_future, saturating_add};
+pub use trace::{Resolved, TraceOp};
 
 pub type RunId = uuid::Uuid;

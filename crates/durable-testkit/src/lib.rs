@@ -5,8 +5,11 @@
 //! durable_testkit::queue_conformance!(async { Arc::new(MyQueue::new()) as Arc<dyn Queue> });
 //! durable_testkit::stream_conformance!(|ttl| async move { StreamHarness::real_time(Arc::new(MyStreams::new(ttl))) });
 //! ```
+//!
+//! [`corpus`] holds the replay conformance corpus every language SDK must pass.
 
 mod clock;
+pub mod corpus;
 pub mod queue;
 pub mod services;
 pub mod store;

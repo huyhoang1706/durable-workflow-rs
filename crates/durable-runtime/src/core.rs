@@ -76,6 +76,15 @@ impl Core {
         self.inner.lock().sm.is_replaying()
     }
 
+    /// Record every replayer call (see `durable_sm::TraceOp`).
+    pub fn record(&self) {
+        self.inner.lock().sm.record();
+    }
+
+    pub fn take_trace(&self) -> Vec<durable_sm::TraceOp> {
+        self.inner.lock().sm.take_trace()
+    }
+
     pub fn user_key(&self, name: &str) -> String {
         self.inner.lock().sm.user_key(name)
     }

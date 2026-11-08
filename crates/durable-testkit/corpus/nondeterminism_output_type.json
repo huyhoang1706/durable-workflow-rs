@@ -1,0 +1,21 @@
+{
+  "name": "nondeterminism_output_type",
+  "description": "History from a version whose step `name` returned a string; the replaying version expects a number, so the host faults the run when the output does not decode.",
+  "workflow": "typed",
+  "input": null,
+  "run_id": "01a1bb5e-f53d-769a-88ea-e932faaac570",
+  "history": [
+    {"run_id":"01a1bb5e-f53d-769a-88ea-e932faaac570","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f53d-769a-88ea-e932faaac570","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"name","output":"ann"}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"name","key":"name"},
+    {"op":"issue","key":"name","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"name","resolution":{"type":"step_succeeded","value":"ann"}}]},
+    {"op":"set_fault","message":"non-determinism: `name` no longer deserializes into the requested type: invalid type: string \"ann\", expected i64"}
+  ],
+  "frontier": [],
+  "fault": "non-determinism: `name` no longer deserializes into the requested type: invalid type: string \"ann\", expected i64",
+  "result": {"err":{"kind":"fault","message":"non-determinism: `name` no longer deserializes into the requested type: invalid type: string \"ann\", expected i64"}}
+}

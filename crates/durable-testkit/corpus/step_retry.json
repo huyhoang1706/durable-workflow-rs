@@ -1,0 +1,23 @@
+{
+  "name": "step_retry",
+  "description": "Step `flaky` (retry: 5 attempts, no delay) fails attempts 1 and 2 and returns its attempt number on attempt 3.",
+  "workflow": "retry",
+  "input": null,
+  "run_id": "01a1bb5e-f455-73b3-be9d-7e243191e19d",
+  "history": [
+    {"run_id":"01a1bb5e-f455-73b3-be9d-7e243191e19d","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f455-73b3-be9d-7e243191e19d","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_failed","key":"flaky","attempt":1,"error":"attempt 1 failed","retryable":true,"retry_at":"2030-01-01T00:00:00Z"}},
+    {"run_id":"01a1bb5e-f455-73b3-be9d-7e243191e19d","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_failed","key":"flaky","attempt":2,"error":"attempt 2 failed","retryable":true,"retry_at":"2030-01-01T00:00:00Z"}},
+    {"run_id":"01a1bb5e-f455-73b3-be9d-7e243191e19d","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"flaky","output":3}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"flaky","key":"flaky"},
+    {"op":"issue","key":"flaky","command":{"type":"step","policy":{"max_attempts":5,"initial_delay_ms":0,"factor":1,"max_delay_ms":0},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"flaky","resolution":{"type":"step_succeeded","value":3}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":3}
+}

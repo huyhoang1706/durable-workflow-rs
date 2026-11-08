@@ -1,0 +1,22 @@
+{
+  "name": "sleep",
+  "description": "Sleeps 90 s as `nap`, then returns how many seconds `ctx.now()` moved.",
+  "workflow": "sleepy",
+  "input": null,
+  "run_id": "01a1bb5e-f470-753b-bddc-fc1d63d429c8",
+  "history": [
+    {"run_id":"01a1bb5e-f470-753b-bddc-fc1d63d429c8","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f470-753b-bddc-fc1d63d429c8","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"timer_scheduled","key":"nap","fire_at":"2030-01-01T00:01:30Z"}},
+    {"run_id":"01a1bb5e-f470-753b-bddc-fc1d63d429c8","seq":3,"at":"2030-01-01T00:01:30Z","kind":{"type":"timer_fired","key":"nap"}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"nap","key":"nap"},
+    {"op":"issue","key":"nap","command":{"type":"sleep","dur_ms":90000}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"nap","resolution":{"type":"slept"}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":90}
+}

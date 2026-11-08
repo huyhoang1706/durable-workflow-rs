@@ -1,0 +1,26 @@
+{
+  "name": "nondeterminism_missing_command",
+  "description": "History from a version that ran steps `a` then `b`; the replaying version runs `a` then `c`, so the event for `b` is never claimed and the run faults.",
+  "workflow": "renamed",
+  "input": null,
+  "run_id": "01a1bb5e-f535-7516-be61-cf3716f0567c",
+  "history": [
+    {"run_id":"01a1bb5e-f535-7516-be61-cf3716f0567c","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f535-7516-be61-cf3716f0567c","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"a","output":1}},
+    {"run_id":"01a1bb5e-f535-7516-be61-cf3716f0567c","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"b","output":2}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"a","key":"a"},
+    {"op":"issue","key":"a","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"a","resolution":{"type":"step_succeeded","value":1}}]},
+    {"op":"user_key","name":"c","key":"c"},
+    {"op":"issue","key":"c","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code"}
+  ],
+  "frontier": [
+    {"type":"step","key":"c","attempts":0,"retry_at":null,"policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}
+  ],
+  "fault": "non-determinism: history has an event for `b` but the workflow did not issue it (was a step removed or renamed?)",
+  "result": {"err":{"kind":"fault","message":"engine fault: non-determinism: history has an event for `b` but the workflow did not issue it (was a step removed or renamed?)"}}
+}

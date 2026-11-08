@@ -1,0 +1,22 @@
+{
+  "name": "nondeterminism_kind_mismatch",
+  "description": "History from a version that slept 60 s as `wait`; the replaying version runs a step `wait` instead, which faults.",
+  "workflow": "evolve",
+  "input": null,
+  "run_id": "01a1bb5e-f52b-7253-bc9d-f31bec6d89d3",
+  "history": [
+    {"run_id":"01a1bb5e-f52b-7253-bc9d-f31bec6d89d3","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f52b-7253-bc9d-f31bec6d89d3","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"timer_scheduled","key":"wait","fire_at":"2030-01-01T00:01:00Z"}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"wait","key":"wait"},
+    {"op":"issue","key":"wait","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code"}
+  ],
+  "frontier": [
+    {"type":"step","key":"wait","attempts":0,"retry_at":null,"policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}
+  ],
+  "fault": "non-determinism: history says `wait` was a sleep, but the workflow issued a step",
+  "result": {"err":{"kind":"fault","message":"engine fault: non-determinism: history says `wait` was a sleep, but the workflow issued a step"}}
+}

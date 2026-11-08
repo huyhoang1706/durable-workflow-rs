@@ -52,6 +52,22 @@ impl Driver {
     }
 }
 
+/// Replay `core`'s history into a freshly started `driver`.
+///
+/// The poll after the newest event is live (`is_replaying` is false): it is
+/// the first time the body sees that event, unless an earlier execution
+/// crashed before acting on it, in which case acting twice beats never acting.
+pub(crate) async fn replay(core: &Core, driver: &mut Driver) -> DriverStatus {
+    let mut status = DriverStatus::Pending;
+    while core.advance() == crate::core::Advance::RunCode {
+        status = driver.poll().await;
+        if core.fault().is_some() {
+            break;
+        }
+    }
+    status
+}
+
 pub(crate) fn panic_message(p: Box<dyn Any + Send>) -> String {
     p.downcast_ref::<String>()
         .cloned()

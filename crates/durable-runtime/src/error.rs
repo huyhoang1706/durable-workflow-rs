@@ -85,6 +85,24 @@ impl WorkflowError {
     pub fn is_engine_fault(&self) -> bool {
         matches!(self, Self::NonDeterminism(_) | Self::Fault(_))
     }
+
+    /// The SDK-neutral form of this error, as the replay conformance corpus
+    /// records it.
+    pub fn failure(&self) -> durable_sm::WorkflowFailure {
+        use durable_sm::FailureKind as K;
+        let kind = match self {
+            Self::Step(_) => K::Step,
+            Self::Failed(_) => K::Failed,
+            Self::Cancelled => K::Cancelled,
+            Self::Interrupted => K::Interrupted,
+            Self::HookConflict(_) => K::HookConflict,
+            Self::NonDeterminism(_) | Self::Fault(_) => K::Fault,
+        };
+        durable_sm::WorkflowFailure {
+            kind,
+            message: self.to_string(),
+        }
+    }
 }
 
 impl From<StepError> for WorkflowError {

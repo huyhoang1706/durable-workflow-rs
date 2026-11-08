@@ -1,0 +1,26 @@
+{
+  "name": "race_timer_wins",
+  "description": "Races signal `approval` against a 60 s sleep `deadline`. The timer fires first, the signal wait is released, and it returns `timeout`.",
+  "workflow": "race",
+  "input": null,
+  "run_id": "01a1bb5e-f4a2-7451-a9da-f3d970b66d8a",
+  "history": [
+    {"run_id":"01a1bb5e-f4a2-7451-a9da-f3d970b66d8a","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f4a2-7451-a9da-f3d970b66d8a","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"approval","kind":"signal","name":"approval","filter":null,"timeout_at":null}},
+    {"run_id":"01a1bb5e-f4a2-7451-a9da-f3d970b66d8a","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"timer_scheduled","key":"deadline","fire_at":"2030-01-01T00:01:00Z"}},
+    {"run_id":"01a1bb5e-f4a2-7451-a9da-f3d970b66d8a","seq":4,"at":"2030-01-01T00:01:00Z","kind":{"type":"timer_fired","key":"deadline"}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"approval","key":"approval"},
+    {"op":"user_key","name":"deadline","key":"deadline"},
+    {"op":"issue","key":"approval","command":{"type":"wait","kind":"signal","name":"approval","filter":null,"timeout_ms":null}},
+    {"op":"issue","key":"deadline","command":{"type":"sleep","dur_ms":60000}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"deadline","resolution":{"type":"slept"}}]},
+    {"op":"release","key":"approval"},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":"timeout"}
+}

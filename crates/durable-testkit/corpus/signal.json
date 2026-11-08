@@ -1,0 +1,22 @@
+{
+  "name": "signal",
+  "description": "Waits for signal `approval` and returns its payload.",
+  "workflow": "approve",
+  "input": null,
+  "run_id": "01a1bb5e-f481-7622-86e8-e418187ae2b5",
+  "history": [
+    {"run_id":"01a1bb5e-f481-7622-86e8-e418187ae2b5","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f481-7622-86e8-e418187ae2b5","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"wait_started","key":"approval","kind":"signal","name":"approval","filter":null,"timeout_at":null}},
+    {"run_id":"01a1bb5e-f481-7622-86e8-e418187ae2b5","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"signal_received","key":"approval","signal_id":"01a1bb5e-f488-76a4-9e9f-87663a837e20","payload":{"by":"ann"}}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"approval","key":"approval"},
+    {"op":"issue","key":"approval","command":{"type":"wait","kind":"signal","name":"approval","filter":null,"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"approval","resolution":{"type":"signal","payload":{"by":"ann"}}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":{"by":"ann"}}
+}

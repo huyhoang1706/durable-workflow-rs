@@ -1,0 +1,29 @@
+{
+  "name": "parallel_steps",
+  "description": "Awaits steps `a` (1), `b` (2) and `c` (3) together, issued in that order; returns their sum.",
+  "workflow": "fan-out",
+  "input": null,
+  "run_id": "01a1bb5e-f444-738b-94e4-90f1f96d4eda",
+  "history": [
+    {"run_id":"01a1bb5e-f444-738b-94e4-90f1f96d4eda","seq":1,"at":"2030-01-01T00:00:00Z","kind":{"type":"run_started","input":null}},
+    {"run_id":"01a1bb5e-f444-738b-94e4-90f1f96d4eda","seq":2,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"a","output":1}},
+    {"run_id":"01a1bb5e-f444-738b-94e4-90f1f96d4eda","seq":3,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"b","output":2}},
+    {"run_id":"01a1bb5e-f444-738b-94e4-90f1f96d4eda","seq":4,"at":"2030-01-01T00:00:00Z","kind":{"type":"step_succeeded","key":"c","output":3}}
+  ],
+  "trace": [
+    {"op":"advance","result":"run_code"},
+    {"op":"user_key","name":"a","key":"a"},
+    {"op":"user_key","name":"b","key":"b"},
+    {"op":"user_key","name":"c","key":"c"},
+    {"op":"issue","key":"a","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"issue","key":"b","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"issue","key":"c","command":{"type":"step","policy":{"max_attempts":3,"initial_delay_ms":1000,"factor":2,"max_delay_ms":300000},"timeout_ms":null}},
+    {"op":"advance","result":"run_code","resolved":[{"key":"a","resolution":{"type":"step_succeeded","value":1}}]},
+    {"op":"advance","result":"run_code","resolved":[{"key":"b","resolution":{"type":"step_succeeded","value":2}}]},
+    {"op":"advance","result":"run_code","resolved":[{"key":"c","resolution":{"type":"step_succeeded","value":3}}]},
+    {"op":"advance","result":"live"}
+  ],
+  "frontier": [],
+  "fault": null,
+  "result": {"ok":6}
+}

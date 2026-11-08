@@ -15,13 +15,13 @@ use crate::{EventKind, Pending, RetryPolicy, WaitKind, saturating_add};
 
 /// How a failed step attempt is retried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "after", rename_all = "snake_case")]
+#[serde(tag = "type", content = "after_ms", rename_all = "snake_case")]
 pub enum ErrorClass {
     Retryable,
     /// Stops retries immediately.
     Fatal,
     /// Retry no sooner than this.
-    RetryAfter(Duration),
+    RetryAfter(#[serde(with = "crate::ms")] Duration),
 }
 
 /// A wait the store indexes, so signals, hooks and events can find the run.
@@ -60,6 +60,7 @@ pub struct StepLaunch {
     pub key: String,
     /// 1-based.
     pub attempt: u32,
+    #[serde(rename = "timeout_ms", with = "crate::ms::option")]
     pub timeout: Option<Duration>,
 }
 

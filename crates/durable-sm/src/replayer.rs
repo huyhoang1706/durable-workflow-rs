@@ -26,7 +26,7 @@ use rand_chacha::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Event, EventKind, RetryPolicy, RunId, WaitKind};
+use crate::{Event, EventKind, Resolved, RetryPolicy, RunId, TraceOp, WaitKind};
 
 /// Characters generated keys are built from: `name#1`, `name[0]`, `key[recv]`.
 const RESERVED: &[char] = &['#', '[', ']'];
@@ -44,15 +44,18 @@ pub enum Command {
     /// The body stays with the host; the replayer only knows its options.
     Step {
         policy: RetryPolicy,
+        #[serde(rename = "timeout_ms", with = "crate::ms::option")]
         timeout: Option<Duration>,
     },
     Sleep {
+        #[serde(rename = "dur_ms", with = "crate::ms")]
         dur: Duration,
     },
     Wait {
         kind: WaitKind,
         name: String,
         filter: Option<Value>,
+        #[serde(rename = "timeout_ms", with = "crate::ms::option")]
         timeout: Option<Duration>,
     },
     Hook {
@@ -82,11 +85,40 @@ pub struct StepFailure {
     pub retryable: bool,
 }
 
+/// Why a workflow body ended with an error. Every SDK maps its own error
+/// types onto these kinds; messages are the SDK's own and are not compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// The body returned its own error.
+    Failed,
+    /// A step failure (retries exhausted, or fatal) was not handled.
+    Step,
+    /// A hook token is held by another run, and the body did not handle it.
+    HookConflict,
+    Cancelled,
+    Interrupted,
+    /// Non-determinism, an invalid name, a missing dependency, ...: the run
+    /// stays open until the code is fixed.
+    Fault,
+}
+
+/// How a workflow body failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowFailure {
+    pub kind: FailureKind,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Resolution {
-    Step {
-        result: Result<Value, StepFailure>,
+    StepSucceeded {
+        value: Value,
+    },
+    /// The step failed for good (retries exhausted, or a fatal error).
+    StepFailed {
+        failure: StepFailure,
     },
     Slept,
     /// `payload: None` means the wait timed out.
@@ -134,10 +166,12 @@ pub enum Pending {
         attempts: u32,
         retry_at: Option<DateTime<Utc>>,
         policy: RetryPolicy,
+        #[serde(rename = "timeout_ms", with = "crate::ms::option")]
         timeout: Option<Duration>,
     },
     Sleep {
         key: String,
+        #[serde(rename = "dur_ms", with = "crate::ms")]
         dur: Duration,
         fire_at: Option<DateTime<Utc>>,
     },
@@ -146,6 +180,7 @@ pub enum Pending {
         kind: WaitKind,
         name: String,
         filter: Option<Value>,
+        #[serde(rename = "timeout_ms", with = "crate::ms::option")]
         timeout: Option<Duration>,
         started: bool,
         timeout_at: Option<DateTime<Utc>>,
@@ -218,6 +253,8 @@ pub struct Replayer {
     interrupted: bool,
     cancelled: bool,
     fault: Option<String>,
+    /// Every host call, once [`Self::record`] is on.
+    trace: Option<Vec<TraceOp>>,
 }
 
 impl Replayer {
@@ -242,11 +279,31 @@ impl Replayer {
             interrupted: false,
             cancelled: false,
             fault: None,
+            trace: None,
         }
     }
 
     pub fn run_id(&self) -> RunId {
         self.run_id
+    }
+
+    // ---- tracing ----------------------------------------------------------
+
+    /// Record every host call from now on (see [`TraceOp`]). Call it right
+    /// after [`Self::new`] for a complete trace.
+    pub fn record(&mut self) {
+        self.trace.get_or_insert_with(Vec::new);
+    }
+
+    /// The ops recorded so far; recording continues.
+    pub fn take_trace(&mut self) -> Vec<TraceOp> {
+        self.trace.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    fn trace(&mut self, op: impl FnOnce() -> TraceOp) {
+        if let Some(t) = &mut self.trace {
+            t.push(op());
+        }
     }
 
     // ---- keys -------------------------------------------------------------
@@ -255,14 +312,24 @@ impl Replayer {
     /// characters generated keys are built from, or two commands could share
     /// a key; such a name is a code bug and faults the run.
     pub fn user_key(&mut self, name: &str) -> String {
-        self.check_name(name);
-        self.key_for(name)
+        self.validate(name);
+        let key = self.next_key(name);
+        self.trace(|| TraceOp::UserKey {
+            name: name.into(),
+            key: key.clone(),
+        });
+        key
     }
 
     /// Faults the run if `name` is not a valid user-chosen name.
     pub fn check_name(&mut self, name: &str) {
+        self.trace(|| TraceOp::CheckName { name: name.into() });
+        self.validate(name);
+    }
+
+    fn validate(&mut self, name: &str) {
         if name.is_empty() || name.contains(RESERVED) {
-            self.set_fault(format!(
+            self.fault_with(format!(
                 "invalid name `{name}`: names must be non-empty and must not contain `#`, `[` or `]`"
             ));
         }
@@ -271,6 +338,15 @@ impl Replayer {
     /// `name`, then `name#1`, `name#2`, ... in call order. Engine-generated
     /// names (`name[0]`, `key[recv]`) go here directly.
     pub fn key_for(&mut self, name: &str) -> String {
+        let key = self.next_key(name);
+        self.trace(|| TraceOp::KeyFor {
+            name: name.into(),
+            key: key.clone(),
+        });
+        key
+    }
+
+    fn next_key(&mut self, name: &str) -> String {
         let n = self.occurrences.entry(name.to_string()).or_insert(0);
         let key = if *n == 0 {
             name.to_string()
@@ -287,12 +363,16 @@ impl Replayer {
     /// [`Self::key_for`]). A key that is already taken faults the run; the
     /// returned handle then never resolves.
     pub fn issue(&mut self, key: String, command: Command) -> Handle {
+        self.trace(|| TraceOp::Issue {
+            key: key.clone(),
+            command: command.clone(),
+        });
         let handle = Handle(u32::try_from(self.cmds.len()).expect("fewer than 2^32 commands"));
         let rejected = self.by_key.contains_key(&key);
         if rejected {
             // Keys are unique by construction; never let a second command
             // silently take over the first one's resolution.
-            self.set_fault(format!("two commands share the key `{key}`"));
+            self.fault_with(format!("two commands share the key `{key}`"));
         } else {
             self.by_key.insert(key.clone(), handle);
         }
@@ -318,9 +398,12 @@ impl Replayer {
     /// The code no longer awaits `h`. It leaves the frontier; history for it
     /// is still accepted.
     pub fn release(&mut self, h: Handle) {
-        if let Some(c) = self.cmds.get_mut(h.0 as usize) {
-            c.released = true;
-        }
+        let Some(c) = self.cmds.get_mut(h.0 as usize) else {
+            return;
+        };
+        c.released = true;
+        let key = c.key.clone();
+        self.trace(|| TraceOp::Release { key });
     }
 
     pub fn resolution(&self, h: Handle) -> Option<&Resolution> {
@@ -342,6 +425,22 @@ impl Replayer {
     /// the live execution that wrote the history: the code sees one outcome
     /// at a time, so a race (`select!`) picks the same winner.
     pub fn advance(&mut self) -> Advance {
+        let before = self.resolved.len();
+        let result = self.advance_untraced();
+        if self.trace.is_some() {
+            let resolved = self.resolved[before..]
+                .iter()
+                .map(|(h, r)| Resolved {
+                    key: self.cmds[h.0 as usize].key.clone(),
+                    resolution: r.clone(),
+                })
+                .collect();
+            self.trace(|| TraceOp::Advance { result, resolved });
+        }
+        result
+    }
+
+    fn advance_untraced(&mut self) -> Advance {
         while self.cursor < self.history.len() {
             let unissued = self.history[self.cursor]
                 .kind
@@ -389,7 +488,7 @@ impl Replayer {
             }
             Ok(None) => false,
             Err(msg) => {
-                self.set_fault(msg);
+                self.fault_with(msg);
                 true
             }
         }
@@ -415,9 +514,11 @@ impl Replayer {
         };
         let p = &mut cmd.progress;
         let resolution = match (kind, &cmd.command) {
-            (StepSucceeded { output, .. }, Command::Step { .. }) => Some(Resolution::Step {
-                result: Ok(output.clone()),
-            }),
+            (StepSucceeded { output, .. }, Command::Step { .. }) => {
+                Some(Resolution::StepSucceeded {
+                    value: output.clone(),
+                })
+            }
             (
                 StepFailed {
                     attempt,
@@ -433,11 +534,11 @@ impl Replayer {
                     p.retry_at = Some(*at);
                     None
                 }
-                None => Some(Resolution::Step {
-                    result: Err(StepFailure {
+                None => Some(Resolution::StepFailed {
+                    failure: StepFailure {
                         message: error.clone(),
                         retryable: *retryable,
-                    }),
+                    },
                 }),
             },
             (StepSucceeded { .. } | StepFailed { .. }, _) => return Err(mismatch("step", cmd)),
@@ -543,7 +644,9 @@ impl Replayer {
     }
 
     pub fn random_u64(&mut self) -> u64 {
-        self.rng.next_u64()
+        let value = self.rng.next_u64();
+        self.trace(|| TraceOp::Random { value });
+        value
     }
 
     /// A UUIDv7 stamped with [`Self::now`] and filled from the run's seeded
@@ -558,6 +661,7 @@ impl Replayer {
             id = uuid::Uuid::from_u128(self.last_uuid.as_u128() + 1);
         }
         self.last_uuid = id;
+        self.trace(|| TraceOp::Uuid { value: id });
         id
     }
 
@@ -567,18 +671,28 @@ impl Replayer {
         self.fault.as_deref()
     }
 
-    /// The first fault wins.
+    /// Fault the run from the host (a payload that no longer decodes, a
+    /// panic, ...). The first fault wins.
     pub fn set_fault(&mut self, msg: String) {
+        self.trace(|| TraceOp::SetFault {
+            message: msg.clone(),
+        });
+        self.fault_with(msg);
+    }
+
+    fn fault_with(&mut self, msg: String) {
         self.fault.get_or_insert(msg);
     }
 
     /// Fail every pending and future command with [`Abort::Interrupted`].
     pub fn interrupt(&mut self) {
+        self.trace(|| TraceOp::Interrupt);
         self.interrupted = true;
     }
 
     /// Fail every pending and future command with [`Abort::Cancelled`].
     pub fn cancel(&mut self) {
+        self.trace(|| TraceOp::Cancel);
         self.cancelled = true;
     }
 
@@ -716,9 +830,7 @@ mod tests {
         assert_eq!(r.advance(), Advance::RunCode);
         assert_eq!(
             r.resolution(b),
-            Some(&Resolution::Step {
-                result: Ok(json!(2))
-            })
+            Some(&Resolution::StepSucceeded { value: json!(2) })
         );
         assert!(!r.is_replaying(), "the poll after the newest event is live");
         assert_eq!(r.advance(), Advance::Live);
@@ -853,11 +965,11 @@ mod tests {
         assert!(!r.is_replaying(), "live events are not replays");
         assert_eq!(
             r.resolution(a),
-            Some(&Resolution::Step {
-                result: Err(StepFailure {
+            Some(&Resolution::StepFailed {
+                failure: StepFailure {
                     message: "boom".into(),
                     retryable: true
-                })
+                }
             })
         );
     }
@@ -873,9 +985,95 @@ mod tests {
     }
 
     #[test]
+    fn recording_traces_host_calls_and_the_resolutions_each_advance_produced() {
+        let mut r = Replayer::new(
+            RunId::nil(),
+            log(vec![
+                EventKind::RunStarted { input: json!(0) },
+                ok("a", json!(1)),
+            ]),
+        );
+        r.record();
+        r.advance();
+        let key = r.user_key("a");
+        r.issue(key, step());
+        r.advance();
+        let value = r.random_u64();
+        let t = r.issue("t".into(), sleep());
+        r.release(t);
+        r.set_fault("boom".into());
+        assert_eq!(
+            r.take_trace(),
+            vec![
+                TraceOp::Advance {
+                    result: Advance::RunCode,
+                    resolved: vec![]
+                },
+                TraceOp::UserKey {
+                    name: "a".into(),
+                    key: "a".into()
+                },
+                TraceOp::Issue {
+                    key: "a".into(),
+                    command: step()
+                },
+                TraceOp::Advance {
+                    result: Advance::RunCode,
+                    resolved: vec![Resolved {
+                        key: "a".into(),
+                        resolution: Resolution::StepSucceeded { value: json!(1) }
+                    }]
+                },
+                TraceOp::Random { value },
+                TraceOp::Issue {
+                    key: "t".into(),
+                    command: sleep()
+                },
+                TraceOp::Release { key: "t".into() },
+                TraceOp::SetFault {
+                    message: "boom".into()
+                },
+            ]
+        );
+        assert!(r.take_trace().is_empty(), "taking drains the trace");
+    }
+
+    #[test]
+    fn nothing_is_recorded_unless_asked() {
+        let mut r = Replayer::new(RunId::nil(), vec![]);
+        r.user_key("a");
+        r.advance();
+        assert!(r.take_trace().is_empty());
+    }
+
+    #[test]
     fn commands_and_resolutions_are_tagged_in_json() {
         let v = serde_json::to_value(Resolution::Signal { payload: None }).unwrap();
         assert_eq!(v, json!({"type": "signal", "payload": null}));
+        let v = serde_json::to_value(Resolution::StepSucceeded { value: json!(1) }).unwrap();
+        assert_eq!(v, json!({"type": "step_succeeded", "value": 1}));
+        let v = serde_json::to_value(Resolution::StepFailed {
+            failure: StepFailure {
+                message: "x".into(),
+                retryable: false,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            json!({"type": "step_failed", "failure": {"message": "x", "retryable": false}})
+        );
+        let v = serde_json::to_value(Command::Step {
+            policy: RetryPolicy::fixed(2, Duration::from_millis(1500)),
+            timeout: Some(Duration::from_secs(30)),
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            json!({"type": "step", "timeout_ms": 30000, "policy": {
+                "max_attempts": 2, "initial_delay_ms": 1500, "factor": 1, "max_delay_ms": 1500
+            }})
+        );
         let c: Command = serde_json::from_value(json!({
             "type": "hook", "token": "t"
         }))
