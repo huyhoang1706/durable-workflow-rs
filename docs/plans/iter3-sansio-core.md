@@ -280,6 +280,7 @@ or, for sync `def` steps, in a thread pool.
 | P0 ✅ | Create `crates/durable-sm`. Move `Core` → `Replayer` (handles, `advance`, no wakers/closures/deps). `CmdFuture` becomes a ~30-line adapter: handle + waker map in `durable-runtime`. | Whole existing suite passes unchanged. `durable-sm` has no tokio/futures dependency (CI check). |
 | P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 ✅ | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
+| P3a | **Host abstraction** (see "P3a: hosting workflows written in other languages"): the engine runs any workflow through `HostWorkflow` / `HostExecution`, and Rust becomes the first host. | Suite and corpus pass unchanged. A scripted host with no Rust futures runs corpus workflows end to end on the real engine. |
 | P3 | `bindings/node` (napi-rs): embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/node-onboarding` passes the conformance corpus and a crash/resume chaos test. |
 | P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
@@ -376,6 +377,150 @@ a real run on the memory backend, and what replaying that history did. Where the
   key, but the frontier order and the order of registered events changed. The corpus race uses `biased;`.
 - **Not covered yet:** live-phase interaction (`push_live` after `Live`), hook token conflicts (they need two runs)
   and `RunRetried` (the corpus stores normalized histories, and `normalize` runs in the Rust shell for every SDK).
+
+## P3a: hosting workflows written in other languages (design)
+
+### The problem
+
+The engine only knows Rust workflows. Five places tie it to Rust:
+
+| Coupling | Where | Why it blocks Node |
+|---|---|---|
+| `Exec` holds a Rust `Driver` (`Async` / `Sync`) and `driver.poll()` | `engine.rs`, `driver.rs` | "Run the code until quiescent" is a JS event-loop operation for Node. |
+| `Core::advance` wakes Rust wakers itself | `core.rs` | Node settles promises, and has no wakers. |
+| Step bodies are `StepStart` (a Rust future or `FnOnce`) taken from `Core` | `engine.rs` `launch` | A JS step body is a JS function, called through napi. |
+| `ErasedWorkflow::start(core, input) -> Driver` is `pub(crate)` | `workflow.rs` | `bindings/node` is another crate and has to register its own workflows. |
+| `on_finished` matches on `WorkflowError` | `engine.rs` | Node reports a JS error, not a Rust enum. |
+
+### Shape: the shell owns replay, the host owns user code
+
+```
+           engine shell (durable-runtime)                         host (Rust today, Node in P3)
+ ┌──────────────────────────────────────────────┐        ┌────────────────────────────────────────┐
+ │ advance / take_resolved / frontier / faults  │        │ runs the body; ctx calls go straight    │
+ │ decide → commit, timers, step tasks, streams │        │ into the shared Replayer (sync calls)   │
+ │                                              │activate│                                        │
+ │   loop { advance() == RunCode ──────────────────────► settle resolutions, run to quiescence    │
+ │          ◄──────────────────────────────────────────── ExecStatus: Pending | Finished(result)  │
+ │   Run { launch } ───────────────────────────────────► start_step(key, attempt) → attempt future │
+ └──────────────────────┬───────────────────────┘        └──────────────────┬─────────────────────┘
+                        └──────── ReplayHandle (Arc<Mutex<Replayer>>) ─────┘
+```
+
+The `Replayer` sits in a `ReplayHandle` that the shell and the host share. The shell drives history through
+it: `advance`, `push_live`, `frontier`, `fault`, `cancel`. The host's ctx calls go into it directly and
+synchronously: `user_key`, `issue`, `release`, `random_u64`, `uuid`. This is Restate's model (sync calls into the
+core), not Temporal's (the SDK buffers commands and sends them back per activation). `ctx.random()` and
+`ctx.uuid()` have to return a value synchronously, and a napi call costs well under a microsecond. The handle only
+exposes `with(|r: &mut Replayer| ..)`, so nobody can hold the lock across an `.await`. The engine (a tokio
+thread) and JS (the main thread) each take it only for one short call.
+
+### API (in a new `durable_runtime::host` module, `#[doc(hidden)]` until the Node binding ships)
+
+```rust
+/// The replayer of one execution, shared by the engine and the host.
+#[derive(Clone)]
+pub struct ReplayHandle(Arc<Mutex<Replayer>>);
+impl ReplayHandle {
+    pub fn with<R>(&self, f: impl FnOnce(&mut Replayer) -> R) -> R;
+}
+
+/// A registered workflow, written in any language. Replaces `ErasedWorkflow`.
+pub trait HostWorkflow: Send + Sync + 'static {
+    fn name(&self) -> &str;
+    fn definition(&self) -> WorkflowDefinition;
+    fn required_deps(&self) -> Vec<DepKey> { vec![] }
+    /// Start the body for one execution. It must not run user code yet: that waits for the first `activate`.
+    fn start(&self, env: ExecEnv) -> Box<dyn HostExecution>;
+}
+
+pub struct ExecEnv {
+    pub run_id: RunId,
+    pub input: Value,
+    pub replay: ReplayHandle,
+    pub deps: Deps,                      // Rust-only today; other hosts ignore it
+    pub pool: Arc<dyn ComputePool>,      // for blocking Rust steps
+}
+
+/// One execution of one workflow body.
+#[async_trait]
+pub trait HostExecution: Send {
+    /// Settle these resolutions (in order), then run user code until it can do nothing more without new events.
+    async fn activate(&mut self, resolved: Vec<(Handle, Resolution)>) -> ExecStatus;
+    /// Start attempt `attempt` of the step issued under `key`. `None` means the body can no longer start it
+    /// (a Rust `FnOnce` an earlier attempt took); the engine then rebuilds the execution.
+    fn start_step(&mut self, key: &str, attempt: u32, info: StepInfo, span: &Span) -> Option<StepAttempt>;
+    /// The engine is done with this execution: unwind or abandon the body.
+    fn interrupt(&mut self);
+}
+
+pub enum ExecStatus {
+    Pending,
+    Finished(Result<Value, WorkflowFailure>),   // the SDK-neutral failure from P2
+}
+
+pub struct StepAttempt {
+    pub kind: &'static str,   // "async" | "blocking" | "node" ... for the span
+    pub fut: BoxFuture<'static, Result<Value, StepError>>,
+}
+
+impl WorkerBuilder {
+    pub fn register_host(self, w: Arc<dyn HostWorkflow>) -> Self;
+}
+```
+
+### What the engine keeps
+
+- **The replay loop.** It is generic now: `while replay.with(Replayer::advance) == RunCode { status =
+  exec.activate(replay.with(Replayer::take_resolved)).await; if faulted, stop }`. `rebuild`, `apply` and
+  `Worker::replay` all use it, so the corpus records what the engine does for every host.
+- **Running step attempts.** The engine creates the `StepInfo` (idempotency key, cancel flag, heartbeat, streams,
+  deps) and the span. It spawns the attempt future with its timeout, turns a panic into a retryable failure,
+  sends `StepDone`, and reaps attempts whose command left the frontier. The host only turns a key into a future.
+- **Outcomes.** `on_finished` matches on `FailureKind`: `cancelled` cancels the run, `interrupted` and `fault`
+  record a fault, and `failed` / `step` / `hook_conflict` fail the run with the message.
+
+### What the hosts do
+
+- **Rust (`RustExecution`, this PR):** it holds today's `Core`, minus the replayer (wakers, `StepStart`s, deps), and
+  the `Driver`.
+  - `activate` wakes the wakers of the resolved handles, then polls the driver.
+  - `start_step` takes the `StepStart`. An async step becomes `scope_async(info, fut)`. A blocking step runs on
+    the pool under `scope_blocking`, with its own panic catch, and a oneshot turns it into the future.
+  - The `#[workflow]` structs and `register_fn*` closures implement `HostWorkflow`.
+- **Node (P3, sketch):**
+  - `start` asks JS (through a `ThreadsafeFunction`) to create an execution object bound to the napi
+    `ReplayHandle`.
+  - `activate` calls JS with the resolutions. JS settles the promises, waits for one `setImmediate`, and returns
+    the status.
+  - `start_step` returns a future that calls JS `runStep(key, attempt, info)` and awaits its promise.
+  - `interrupt` drops the execution. The JS step map can call a body again, so `start_step` never returns `None`.
+- **Conformance:** `Worker::replay` takes a `HostWorkflow`, so the Node binding can record its trace through the
+  same Rust entry point the corpus test uses.
+
+### Alternatives considered
+
+- **The host owns the replayer, and the shell asks it for frontier and faults.** Every binding would have to
+  forward a dozen methods, and could get them wrong. Rejected.
+- **Temporal-style batching: the host buffers commands and returns them with each activation.** It saves the
+  mutex, but `random_u64`, `uuid` and key reservation have to answer synchronously. Rejected; the sync-call
+  cost is negligible next to one activation round trip.
+- **Keep `Driver` as an enum and add a `Driver::Foreign` variant.** That keeps Rust step bodies in the engine and
+  does not let another crate register workflows. Rejected.
+
+### Risks
+
+- **Activation round trips.** `advance()` still stops after every resolving event (P0), so a Node replay costs one
+  `ThreadsafeFunction` round trip per resolution. Measure this in P3, then consider batched advance for hosts
+  whose promises settle in a defined order. The corpus guards that change.
+- **Lock contention** is limited to single short calls. The `with` API keeps any lock from being held across an
+  await.
+
+### Done when
+
+The existing suite and the corpus pass unchanged. A test-only `ScriptedHost` replays corpus traces through the
+real engine on the memory backend, issuing commands from the trace with no Rust futures or `Driver`, and runs
+`sequential_steps`, `step_retry`, `signal` and `race_timer_wins` to the recorded result.
 
 ## Open questions
 
