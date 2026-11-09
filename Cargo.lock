@@ -1005,14 +1005,20 @@ dependencies = [
 name = "durable-typescript"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "durable-memory",
  "durable-runtime",
  "durable-sm",
+ "durable-spi",
  "napi",
  "napi-build",
  "napi-derive",
+ "parking_lot",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2060,6 +2066,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

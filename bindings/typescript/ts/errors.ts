@@ -119,3 +119,46 @@ export function failureOf(e: unknown): WorkflowFailure {
   if (e instanceof WorkflowError) return { kind: e.kind, message: e.message };
   return { kind: "failed", message: e instanceof Error ? e.message : String(e) };
 }
+
+/** What `RunHandle.result()` rejects with. */
+export abstract class RunError extends Error {
+  readonly runId: string;
+
+  constructor(runId: string, message: string) {
+    super(message);
+    this.runId = runId;
+  }
+}
+
+/** The run failed: its body threw, a step failed for good, or it timed out. */
+export class RunFailedError extends RunError {
+  constructor(runId: string, message: string) {
+    super(runId, `run failed: ${message}`);
+    this.name = "RunFailedError";
+  }
+}
+
+export class RunCancelledError extends RunError {
+  constructor(runId: string) {
+    super(runId, "run was cancelled");
+    this.name = "RunCancelledError";
+  }
+}
+
+export class RunNotFoundError extends RunError {
+  constructor(runId: string) {
+    super(runId, `run ${runId} not found`);
+    this.name = "RunNotFoundError";
+  }
+}
+
+/** The workflow's start-time rate limit is exceeded; try again at `retryAt`. */
+export class RateLimitedError extends Error {
+  readonly retryAt: Date;
+
+  constructor(workflow: string, retryAt: Date) {
+    super(`\`${workflow}\` is rate limited until ${retryAt.toISOString()}`);
+    this.name = "RateLimitedError";
+    this.retryAt = retryAt;
+  }
+}

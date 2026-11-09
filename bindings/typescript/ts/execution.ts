@@ -126,7 +126,7 @@ export interface Workflow<I = unknown, O = unknown> {
   readonly body: WorkflowBody<I, O>;
 }
 
-/** Define a workflow. Register it with a worker (S2) or replay it (`replay`). */
+/** Define a workflow. Register it with a `Worker`, or replay a history through it (`replay`). */
 export function workflow<I, O>(name: string, body: WorkflowBody<I, O>): Workflow<I, O>;
 export function workflow<I, O>(name: string, options: WorkflowOptions, body: WorkflowBody<I, O>): Workflow<I, O>;
 export function workflow<I, O>(

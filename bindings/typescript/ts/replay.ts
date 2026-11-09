@@ -1,10 +1,11 @@
-// Replay a stored history through a workflow offline, with recording on: the
-// same loop the engine runs (`durable_runtime::host::replay`), with no store
-// and no step execution. The conformance tests check bindings with it.
+// Replay a stored history through a workflow offline, with recording on,
+// through the engine's own entry point (`Worker::replay` in Rust): the same
+// loop `rebuild` runs, with no store and no step execution. The conformance
+// tests check bindings with it.
 
-import { Execution, type Workflow } from "./execution.ts";
-import { native } from "./native.ts";
+import type { Workflow } from "./execution.ts";
 import type { Event, Finish, Pending, TraceOp } from "./wire.ts";
+import { Backend, Worker } from "./worker.ts";
 
 export interface ReplayOutcome {
   trace: TraceOp[];
@@ -15,21 +16,12 @@ export interface ReplayOutcome {
   result: Finish | null;
 }
 
-/** `history` must already be normalized for replay. */
+/** `history` is the run's log as stored; it is normalized the way the engine does. */
 export async function replay(
   workflow: Workflow<any, any>,
   runId: string,
   input: unknown,
   history: Event[],
 ): Promise<ReplayOutcome> {
-  const r = new native.Replayer(runId, history);
-  r.record();
-  const exec = new Execution(workflow, r, input);
-  let result: Finish | null = null;
-  while (r.advance() === "run_code") {
-    const status = await exec.activate(r.takeResolved());
-    if (status.status === "finished") result = status.result;
-    if (r.fault() !== null) break;
-  }
-  return { trace: r.takeTrace(), frontier: r.frontier(), fault: r.fault(), result };
+  return new Worker(Backend.memory(), [workflow]).replay(workflow, runId, input, history);
 }
