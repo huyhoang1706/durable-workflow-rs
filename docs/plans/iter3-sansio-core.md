@@ -1,6 +1,7 @@
 # Iteration 3: a sans-IO core for TS/JS and Python SDKs
 
-> Status: P0–P2 are done; P3 (Node binding) is next. The design sections below are the original sketch. The
+> Status: P0–P2 and P3a are done. P3 (the TypeScript binding, `bindings/typescript`) is designed below and its first
+> slice (S1) is built. The design sections below are the original sketch. The
 > "as built" sections record where the code differs. `durable-core` was renamed `durable-spi` after P1 (#9); the
 > as-built notes keep the name used at the time.
 
@@ -252,7 +253,7 @@ executor needs later: the same decisions, with "launch" meaning "call the SDK en
 ## How a TS workflow maps onto it
 
 ```ts
-import { workflow, step } from "@durable/node";
+import { workflow, step } from "@durable/typescript";
 
 export const onboarding = workflow("user.onboarding", { timeout: "7d" }, async (ctx, user: Signup) => {
   await ctx.step("send-email", () => mailer.send(user.email, "Welcome!"), { retry: 5, timeout: "30s" });
@@ -280,7 +281,8 @@ or, for sync `def` steps, in a thread pool.
 | P0 ✅ | Create `crates/durable-sm`. Move `Core` → `Replayer` (handles, `advance`, no wakers/closures/deps). `CmdFuture` becomes a ~30-line adapter: handle + waker map in `durable-runtime`. | Whole existing suite passes unchanged. `durable-sm` has no tokio/futures dependency (CI check). |
 | P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 ✅ | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
-| P3 | `bindings/node` (napi-rs): embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/node-onboarding` passes the conformance corpus and a crash/resume chaos test. |
+| P3a ✅ | **Host abstraction** (see "P3a: hosting workflows written in other languages"): the engine runs any workflow through `HostWorkflow` / `HostExecution`, and Rust becomes the first host. | Suite and corpus pass unchanged. A scripted host with no Rust futures runs corpus workflows end to end on the real engine. |
+| P3 | `bindings/typescript` (napi-rs), see "P3: the TypeScript binding": embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/typescript-onboarding` passes the conformance corpus and a crash/resume chaos test. |
 | P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
 
@@ -376,6 +378,372 @@ a real run on the memory backend, and what replaying that history did. Where the
   key, but the frontier order and the order of registered events changed. The corpus race uses `biased;`.
 - **Not covered yet:** live-phase interaction (`push_live` after `Live`), hook token conflicts (they need two runs)
   and `RunRetried` (the corpus stores normalized histories, and `normalize` runs in the Rust shell for every SDK).
+
+## P3a: hosting workflows written in other languages (design)
+
+### The problem
+
+The engine only knows Rust workflows. Five places tie it to Rust:
+
+| Coupling | Where | Why it blocks Node |
+|---|---|---|
+| `Exec` holds a Rust `Driver` (`Async` / `Sync`) and `driver.poll()` | `engine.rs`, `driver.rs` | "Run the code until quiescent" is a JS event-loop operation for Node. |
+| `Core::advance` wakes Rust wakers itself | `core.rs` | Node settles promises, and has no wakers. |
+| Step bodies are `StepStart` (a Rust future or `FnOnce`) taken from `Core` | `engine.rs` `launch` | A JS step body is a JS function, called through napi. |
+| `ErasedWorkflow::start(core, input) -> Driver` is `pub(crate)` | `workflow.rs` | `bindings/node` is another crate and has to register its own workflows. |
+| `on_finished` matches on `WorkflowError` | `engine.rs` | Node reports a JS error, not a Rust enum. |
+
+### Shape: the shell owns replay, the host owns user code
+
+```
+           engine shell (durable-runtime)                         host (Rust today, Node in P3)
+ ┌──────────────────────────────────────────────┐        ┌────────────────────────────────────────┐
+ │ advance / take_resolved / frontier / faults  │        │ runs the body; ctx calls go straight    │
+ │ decide → commit, timers, step tasks, streams │        │ into the shared Replayer (sync calls)   │
+ │                                              │activate│                                        │
+ │   loop { advance() == RunCode ──────────────────────► settle resolutions, run to quiescence    │
+ │          ◄──────────────────────────────────────────── ExecStatus: Pending | Finished(result)  │
+ │   Run { launch } ───────────────────────────────────► start_step(key, attempt) → attempt future │
+ └──────────────────────┬───────────────────────┘        └──────────────────┬─────────────────────┘
+                        └──────── ReplayHandle (Arc<Mutex<Replayer>>) ─────┘
+```
+
+The `Replayer` sits in a `ReplayHandle` that the shell and the host share. The shell drives history through
+it: `advance`, `push_live`, `frontier`, `fault`, `cancel`. The host's ctx calls go into it directly and
+synchronously: `user_key`, `issue`, `release`, `random_u64`, `uuid`. This is Restate's model (sync calls into the
+core), not Temporal's (the SDK buffers commands and sends them back per activation). `ctx.random()` and
+`ctx.uuid()` have to return a value synchronously, and a napi call costs well under a microsecond. The handle only
+exposes `with(|r: &mut Replayer| ..)`, so nobody can hold the lock across an `.await`. The engine (a tokio
+thread) and JS (the main thread) each take it only for one short call.
+
+### API (in a new `durable_runtime::host` module, `#[doc(hidden)]` until the Node binding ships)
+
+```rust
+/// The replayer of one execution, shared by the engine and the host.
+#[derive(Clone)]
+pub struct ReplayHandle(Arc<Mutex<Replayer>>);
+impl ReplayHandle {
+    pub fn with<R>(&self, f: impl FnOnce(&mut Replayer) -> R) -> R;
+}
+
+/// A registered workflow, written in any language. Replaces `ErasedWorkflow`.
+pub trait HostWorkflow: Send + Sync + 'static {
+    fn name(&self) -> &str;
+    fn definition(&self) -> WorkflowDefinition;
+    fn required_deps(&self) -> Vec<DepKey> { vec![] }
+    /// Start the body for one execution. It must not run user code yet: that waits for the first `activate`.
+    fn start(&self, env: ExecEnv) -> Box<dyn HostExecution>;
+}
+
+pub struct ExecEnv {
+    pub run_id: RunId,
+    pub input: Value,
+    pub replay: ReplayHandle,
+    pub deps: Deps,                      // Rust-only today; other hosts ignore it
+    pub pool: Arc<dyn ComputePool>,      // for blocking Rust steps
+}
+
+/// One execution of one workflow body.
+#[async_trait]
+pub trait HostExecution: Send {
+    /// Settle these resolutions (in order), then run user code until it can do nothing more without new events.
+    async fn activate(&mut self, resolved: Vec<(Handle, Resolution)>) -> ExecStatus;
+    /// Start attempt `attempt` of the step issued under `key`. `None` means the body can no longer start it
+    /// (a Rust `FnOnce` an earlier attempt took); the engine then rebuilds the execution.
+    fn start_step(&mut self, key: &str, attempt: u32, info: StepInfo, span: &Span) -> Option<StepAttempt>;
+    /// The engine is done with this execution: unwind or abandon the body.
+    fn interrupt(&mut self);
+}
+
+pub enum ExecStatus {
+    Pending,
+    Finished(Result<Value, WorkflowFailure>),   // the SDK-neutral failure from P2
+}
+
+pub struct StepAttempt {
+    pub kind: &'static str,   // "async" | "blocking" | "node" ... for the span
+    pub fut: BoxFuture<'static, Result<Value, StepError>>,
+}
+
+impl WorkerBuilder {
+    pub fn register_host(self, w: Arc<dyn HostWorkflow>) -> Self;
+}
+```
+
+### What the engine keeps
+
+- **The replay loop.** It is generic now: `while replay.with(Replayer::advance) == RunCode { status =
+  exec.activate(replay.with(Replayer::take_resolved)).await; if faulted, stop }`. `rebuild`, `apply` and
+  `Worker::replay` all use it, so the corpus records what the engine does for every host.
+- **Running step attempts.** The engine creates the `StepInfo` (idempotency key, cancel flag, heartbeat, streams,
+  deps) and the span. It spawns the attempt future with its timeout, turns a panic into a retryable failure,
+  sends `StepDone`, and reaps attempts whose command left the frontier. The host only turns a key into a future.
+- **Outcomes.** `on_finished` matches on `FailureKind`: `cancelled` cancels the run, `interrupted` and `fault`
+  record a fault, and `failed` / `step` / `hook_conflict` fail the run with the message.
+
+### What the hosts do
+
+- **Rust (`RustExecution`, this PR):** it holds today's `Core`, minus the replayer (wakers, `StepStart`s, deps), and
+  the `Driver`.
+  - `activate` wakes the wakers of the resolved handles, then polls the driver.
+  - `start_step` takes the `StepStart`. An async step becomes `scope_async(info, fut)`. A blocking step runs on
+    the pool under `scope_blocking`, with its own panic catch, and a oneshot turns it into the future.
+  - The `#[workflow]` structs and `register_fn*` closures implement `HostWorkflow`.
+- **Node (P3, sketch):**
+  - `start` asks JS (through a `ThreadsafeFunction`) to create an execution object bound to the napi
+    `ReplayHandle`.
+  - `activate` calls JS with the resolutions. JS settles the promises, waits for one `setImmediate`, and returns
+    the status.
+  - `start_step` returns a future that calls JS `runStep(key, attempt, info)` and awaits its promise.
+  - `interrupt` drops the execution. The JS step map can call a body again, so `start_step` never returns `None`.
+- **Conformance:** `Worker::replay` takes a `HostWorkflow`, so the Node binding can record its trace through the
+  same Rust entry point the corpus test uses.
+
+### Alternatives considered
+
+- **The host owns the replayer, and the shell asks it for frontier and faults.** Every binding would have to
+  forward a dozen methods, and could get them wrong. Rejected.
+- **Temporal-style batching: the host buffers commands and returns them with each activation.** It saves the
+  mutex, but `random_u64`, `uuid` and key reservation have to answer synchronously. Rejected; the sync-call
+  cost is negligible next to one activation round trip.
+- **Keep `Driver` as an enum and add a `Driver::Foreign` variant.** That keeps Rust step bodies in the engine and
+  does not let another crate register workflows. Rejected.
+
+### Risks
+
+- **Activation round trips.** `advance()` still stops after every resolving event (P0), so a Node replay costs one
+  `ThreadsafeFunction` round trip per resolution. Measure this in P3, then consider batched advance for hosts
+  whose promises settle in a defined order. The corpus guards that change.
+- **Lock contention** is limited to single short calls. The `with` API keeps any lock from being held across an
+  await.
+
+### Done when
+
+The existing suite and the corpus pass unchanged. A test-only `ScriptedHost` replays corpus traces through the
+real engine on the memory backend, issuing commands from the trace with no Rust futures or `Driver`, and runs
+`sequential_steps`, `step_retry`, `signal` and `race_timer_wins` to the recorded result.
+
+## P3a as built
+
+P3a landed on `refactor/host-abstraction`. The full suite passes apart from the tests that need Docker, and so does
+the corpus. The engine no longer knows about `Driver`, `Core` or `WorkflowError`: it runs every workflow through
+`durable_runtime::host` (`#[doc(hidden)]`). Where the code differs from the design above:
+
+- **`host::replay` takes the previous status.** `apply` delivers live commits through the same loop as `rebuild` and
+  `Worker::replay`, and must keep the body's last status when a commit resolves nothing. The loop now stops on a
+  fault in `apply` too; before, it kept polling a faulted body, which then returned an error the engine ignored in
+  favour of the fault.
+- **The Rust host keeps its state behind its own lock.** `Core` holds the shared `ReplayHandle` plus a
+  `Mutex<HostState>` (wakers, `StepStart`s). The lock order is host state, then replayer, so a ctx call can issue a
+  command and park its waker atomically while the engine (which only ever takes the replayer) resolves handles.
+  `RustExecution` lives in `driver.rs`.
+- **The sync driver's thread starts on the first activation**, not in `start`. It used to start right away and could
+  race the first `advance`, so `start` now runs no user code for any host, as the trait requires.
+- **Spent bodies are found while launching.** `Run { launch }` launches attempts in order; the first `start_step`
+  that returns `None` stops the loop and the engine rebuilds, the same outcome as the old `has_start` pre-check.
+  The span's `durable.step.kind` is recorded from `StepAttempt::kind` once the host has answered.
+- **`Worker::replay` still looks the workflow up by name.** Every registered workflow is a `HostWorkflow`, so a
+  binding registers with `WorkerBuilder::register_host` and replays through the same entry point.
+- **`ScriptedHost`** lives in `durable-runtime/tests/replay_corpus.rs`. It splits a case's trace into one segment per
+  `advance`, makes the segment's recorded calls when the matching resolutions arrive (live activations that resolve
+  nothing are ignored), and answers `start_step` with the attempt's outcome from the case history. It runs
+  `sequential_steps`, `step_retry`, `signal` and `race_timer_wins` on the memory backend to the recorded output, and
+  checks that the engine writes a history of the same shape. A mismatch becomes a replayer fault, so the run
+  records it instead of hanging silently.
+
+## P3: the TypeScript binding (design)
+
+The binding lives in `bindings/typescript`. It is "TypeScript", not "Node", because the authoring surface is the
+product. Node is the first runtime that loads the native addon; Bun and Deno load Node-API addons too. The design
+follows the P3a sketch for Node; this section settles what the sketch left open.
+
+### Layout
+
+```
+bindings/typescript/
+  Cargo.toml, build.rs, src/lib.rs   crate `durable-typescript`: a napi-rs cdylib, not published to crates.io
+  package.json, tsconfig.json        npm package, ESM only, Node >= 22.18, TypeScript 7
+  tsdown.config.ts                   bundles ts/ into dist/index.mjs + dist/index.d.mts
+  vitest.config.ts                   unit tests
+  ts/                                the SDK: workflow(), ctx, the host loop, the native loader
+  test/                              Vitest suites
+  scripts/build-native.mjs           cargo build + copy the addon to durable.node
+```
+
+The workspace builds the crate like any other (`cargo clippy --workspace` covers it). Its lib target sets
+`test = false`: a test executable cannot link, because the `napi_*` symbols only exist inside a Node process.
+Prebuilt per-platform packages (`@napi-rs/cli`) come with S4; until then `npm run build:native` compiles locally.
+
+### Two layers
+
+```
+  TypeScript (main thread)                                Rust addon (tokio threads)
+ ┌──────────────────────────────────────────┐          ┌───────────────────────────────────────────┐
+ │ workflow(name, opts, body)               │ register │ JsWorkflow: HostWorkflow                   │
+ │ Execution: handle → {resolve, reject},   │◄─────────┤ JsExecution: HostExecution                 │
+ │   key → step body, body promise          │  TSFN    │   activate   → execution.activate(resolved)│
+ │ ctx.step / sleep / waitFor* / race ...   │          │   start_step → execution.runStep(..)       │
+ │        │ sync calls                      │          │   drop guard → execution.abortStep(..)     │
+ │        ▼                                 │          │   interrupt  → execution.dispose()         │
+ │ native Replayer ─────────────────────────┼── same ReplayHandle (Arc<Mutex<Replayer>>) ──┐        │
+ └──────────────────────────────────────────┘          │ engine, store, queue, lease, timers ◄┘     │
+                                                       └───────────────────────────────────────────┘
+```
+
+- **Native layer.** One `Replayer` class wraps a `durable_runtime::host::ReplayHandle`. Each method takes the lock
+  for one call. Values cross as JSON in the P2 wire shape (internally tagged, `*_ms` durations, RFC 3339 times), so
+  the corpus files, the trace and the JS objects are the same thing. `u64` randoms cross as decimal strings. Later
+  slices add `Worker`, `Client` and the `JsWorkflow` host. The host calls JS through napi `ThreadsafeFunction`s
+  and awaits the promises they return.
+- **TypeScript layer.** It holds everything a language owns: the authoring API, the promise per handle, the step
+  bodies, and "run to quiescence". It never computes a key, matches history or decides anything; it asks the
+  replayer.
+
+### Ctx calls are lazy thenables
+
+A ctx call reserves its key right away and issues its command when it is first awaited, the way Rust builders
+issue on first poll (see "P0 as built"). `ctx.step(..)` returns a `DurableCall<T>`, a `PromiseLike<T>` whose
+`then` issues the command once and then behaves like a promise.
+
+This matters for conformance. The corpus traces record when keys are reserved and when commands are issued. With
+eager promises, `Promise.race([ctx.waitForSignal("approval"), ctx.sleep("deadline", 60_000)])` would trace
+`user_key approval, issue approval, user_key deadline, issue deadline`. With lazy thenables it traces
+`user_key approval, user_key deadline, issue approval, issue deadline`, exactly what the Rust race recorded.
+`Promise.all` and `Promise.race` call `then` on their inputs in order, in microtasks, so the issue order matches
+`try_join!` and `select! { biased; .. }`.
+
+The lazy shape also gives builders for free, as in Rust: `ctx.step("send", fn).retry({ maxAttempts: 5 }).timeout(30_000)`
+configures the command before the first `await` issues it. Configuring after that throws.
+
+### Racing releases the losers
+
+Rust releases a `select!` loser by dropping its future. JS has no drop, so `ctx.race(calls)` and
+`ctx.select({ a: call, b: call })` release every call that has not settled once the winner settles. They also make the
+intent explicit. A plain `Promise.race` still replays correctly, because the loser stays on the frontier and later
+history for it is accepted, but its wait or timer stays registered, so the trace differs from Rust's. The docs
+steer users to `ctx.race`.
+
+### Activation and quiescence
+
+`activate(resolved)` settles the matching promises in order, then waits with `await new Promise(r =>
+setImmediate(r))`. All microtasks have run by then, including the `then` calls that issue newly awaited commands.
+It returns `{ status: "pending" }` or `{ status: "finished", result }`. Before settling a handle it checks
+`abort()`, as `CmdFuture::poll` does: interrupted, cancelled and fault reject with `InterruptedError`,
+`CancelledError` and `FaultError`.
+
+A body that awaits something else (a `fetch`, a `setTimeout`) leaves the frontier empty while it is not finished,
+and the decider faults the run (`Decision::Fault`), the same rule as "awaited a non-durable future" in Rust.
+
+`interrupt` drops the execution: its pending promises never settle and are garbage collected. Nothing in the body
+runs again, so no unwind is needed.
+
+### Steps
+
+- `ctx.step(name, execute)` or `ctx.step(name, { execute, output?, retry?, timeoutMs? })` stores `execute` under
+  the reserved key when the call is created. The engine's
+  `start_step(key, attempt, info)` becomes `execution.runStep(key, attempt, info)`, which calls the body with a
+  `StepContext { key, attempt, idempotencyKey, signal: AbortSignal, heartbeat() }`. A JS function can be called
+  again, so `start_step` never returns `None` and retries never rebuild.
+- The Rust attempt future awaits the JS promise. A drop guard inside it calls `execution.abortStep(key, attempt)`
+  when the engine drops the attempt (reaped, timed out, execution over), which aborts the `AbortSignal`. The engine
+  keeps owning timeouts, retries and panics (here: a thrown non-`Error` value becomes a retryable failure).
+- A step's value goes through JSON on the way to history. The body sees the value from history both live and on
+  replay, so a step that returns a `Date` gets a string back, on every run. Values that do not serialize (BigInt,
+  functions, cycles) fail the step fatally. `StepError.fatal(msg)` and `StepError.retryAfter(ms, msg)` choose the
+  class; anything else thrown is retryable.
+
+### Errors and outcomes
+
+| Body ends with | `WorkflowFailure.kind` |
+|---|---|
+| a returned value | (succeeds) |
+| `StepFailedError` (a step failed for good, not caught) | `step` |
+| `HookConflictError` | `hook_conflict` |
+| `CancelledError` | `cancelled` |
+| `InterruptedError` | `interrupted` |
+| `FaultError`, `NonDeterminismError` | `fault` |
+| any other thrown value | `failed` |
+
+A resolution of the wrong kind (history says `x` was a timer, the code awaits a step) sets a fault through
+`setFault`, as Rust's `unexpected` does. Faults the replayer raises itself have the shared core's messages.
+
+TypeScript types vanish at runtime, so a payload cannot fail to deserialize the way a Rust `T` can. Calls that
+return a payload take an optional schema instead: `output` on a step, `payload` on `waitForSignal`, `waitForEvent`
+and `createHook`. Any [Standard Schema](https://standardschema.dev) works (zod, valibot, arktype); the SDK copies the
+spec's interface and has no runtime dependency. The call's type is inferred from the schema, and a step's `execute`
+must return what the schema accepts:
+
+```ts
+const n = await ctx.step("count", { output: z.number(), execute: () => count() }); // n: number
+const ok = await ctx.waitForSignal("approval", { payload: z.object({ by: z.string() }) });
+```
+
+- A recorded value that does not fit faults the run with "non-determinism: `key` no longer deserializes ...", as
+  Rust does when serde fails. The code gets the schema's output (transforms apply).
+- A live step result that does not fit fails the attempt as fatal, before it is recorded, as Rust does for an output
+  that does not serialize. What is recorded is what `execute` returned, so replay runs the schema on the same value.
+- Replay cannot wait, so a schema that validates asynchronously is a fault.
+- Without a schema the value is passed through as `Json`.
+
+### Determinism
+
+No sandbox in v1. `ctx.now()`, `ctx.random()` (a float in `[0, 1)` from `random_u64`), `ctx.randomU64()` (a
+`bigint`) and `ctx.uuid()` are deterministic. `Date.now()`, `Math.random()` and `crypto.randomUUID()` are not; a later
+opt-in dev mode can patch them to warn while `isReplaying()`.
+
+### Conformance
+
+Three checks, in the order the slices build them:
+
+1. **Replayer through the FFI** (S1): a TypeScript port of `durable_testkit::corpus::play` drives the native
+   `Replayer` with every case's host calls and checks each answer and the final frontier and fault.
+2. **Replay of TypeScript ports** (S1): TypeScript versions of the corpus
+   workflows replay each history through the real host loop (`Execution`) and must reproduce the trace, frontier,
+   fault and result. S1 runs this offline over the native `Replayer`; S2 moves it onto `Worker.replay` so it goes
+   through the same Rust entry point as `replay_corpus`.
+3. **End to end** (S2, S3): runs on the memory backend, then Postgres/Redis, plus the crash/resume chaos test.
+
+### Slices
+
+| Slice | Work | Done when |
+|---|---|---|
+| S1 | Crate, native `Replayer`, the TypeScript ctx and `Execution` host loop, an offline replay driver, checks 1 and 2 | All 22 cases pass check 1; the ported cases pass check 2. |
+| S2 | `JsWorkflow` host over `ThreadsafeFunction`s, `Worker` + `Client` on the memory backend, `Worker.replay` | A TypeScript workflow runs steps, timers and signals on the real engine from Vitest. |
+| S3 | Backends by URL (`memory://`, `postgres://` + optional Redis) through `durable_workflow::connect`, hooks, events, `examples/typescript-onboarding`, chaos test | The P3 "done when" row. |
+| S4 | Prebuilt binaries, CI job, measure activation round trips and tiny-step throughput (open question 2) | Published, and the numbers are written down. |
+
+## S1 as built
+
+S1 is on `refactor/host-abstraction`, after P3a. `npm test` in `bindings/typescript` runs 51 tests: check 1 on all 22
+cases, check 2 on TypeScript ports of all 22 (not only a subset), and unit tests of the step side of `Execution`.
+`ci.sh` runs them when `node` is on the path. Where the code differs from the design above:
+
+- **No `@napi-rs/cli` yet.** `scripts/build-native.mjs` runs `cargo build -p durable-typescript` and copies the library
+  to `durable.node`. The TypeScript is written to be erasable (`erasableSyntaxOnly`): no enums, namespaces or
+  parameter properties.
+- **Toolchain:** TypeScript 7 (`npm run typecheck`), Vitest (`npm test`, forks pool) and tsdown (`npm run build`).
+  tsdown bundles `ts/index.ts` into `dist/index.mjs` and emits `dist/index.d.mts` with TypeScript 7's Go compiler
+  (it warns that its TypeScript 7.0 backend is deprecated in favour of 7.1, still in beta). The package's `exports`
+  point at `dist/`, and `files` ships `dist/` and `durable.node`. `dist/` sits next to `ts/`, so the loader's
+  `../durable.node` resolves the same from source and from the bundle. Tests import the source, not `dist/`.
+- **The native `Replayer` is the whole addon so far,** plus `defaultRetryPolicy()`, so TypeScript never copies Rust's
+  defaults. It already wraps a `ReplayHandle`, so S2 can hand JavaScript the replayer of an engine execution.
+- **`select` is how a race of mixed types is written.** `ctx.select({ signal, timeout })` resolves to
+  `{ key, value }` and releases the losers; `ctx.race([...])` is for calls of one type. `select` calls `then` on its
+  calls as it starts, rather than in a microtask, but they are still issued after every key the body reserved
+  before it, so the trace matches Rust's `select! { biased; .. }`.
+- **On an abort, `activate` rejects every pending call.** A Rust driver polls the root future on every activation, so
+  every pending `CmdFuture` sees the abort. The non-determinism cases need this: the body must finish with the fault
+  in the same activation, as it does in Rust.
+- **The ports use only public API,** with two places where TypeScript has to say what Rust's types say: zod schemas for
+  integers in `signal_timeout`, `hook` and `nondeterminism_output_type`, and a helper that formats `ctx.now()` the way
+  chrono serializes it in `deterministic_helpers`. `sync_workflow` becomes an async body, since TypeScript has no
+  blocking workflows.
+- **`compare` ignores what the host writes,** as P2 specified: `set_fault` messages, the fault when the host raised it,
+  and `err` messages.
+- **Not done yet:** `runStep` and `abortStep` exist and are tested, but nothing calls them until the S2 host bridge.
+  `WorkflowOptions` holds only `timeoutMs`. A `Promise.all` that rejects early leaves its other calls pending, where
+  Rust's `try_join!` would drop (release) them; no corpus case covers it yet.
 
 ## Open questions
 

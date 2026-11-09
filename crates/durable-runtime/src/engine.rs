@@ -7,7 +7,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -16,7 +15,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use durable_sm::{DecideInput, Decision};
+use durable_sm::{DecideInput, Decision, FailureKind, Pending, Replayer, WorkflowFailure};
 use durable_spi::{
     Backend, Commit, CommitOutcome, ComputePool, Error, Event, EventKind, HookReg, Metric, Result,
     Run, RunId, RunStatus, saturating_add,
@@ -27,13 +26,10 @@ use tokio::{sync::Notify, task::AbortHandle};
 use tracing::Instrument;
 
 use crate::{
-    Deps, StepError, WorkflowError, channels,
-    core::{Advance, Core, Pending, StepStart},
-    driver::{self, Driver, DriverStatus},
-    history,
-    step::{self, StepInfo},
+    Deps, StepError, channels, history,
+    host::{self, ExecEnv, ExecStatus, HostExecution, HostWorkflow, ReplayHandle},
+    step::StepInfo,
     stream::{StreamHub, StreamLimits, close_run_streams},
-    workflow::ErasedWorkflow,
 };
 
 pub(crate) struct EngineEnv {
@@ -106,7 +102,7 @@ enum Wake {
 
 pub(crate) async fn execute(
     env: &EngineEnv,
-    wf: &dyn ErasedWorkflow,
+    wf: &dyn HostWorkflow,
     run_id: RunId,
     lost: Arc<Notify>,
     delivery: i64,
@@ -159,7 +155,7 @@ pub(crate) async fn execute(
 
 async fn execute_run(
     env: &EngineEnv,
-    wf: &dyn ErasedWorkflow,
+    wf: &dyn HostWorkflow,
     run: Run,
     lost: Arc<Notify>,
     replayed: &mut usize,
@@ -174,15 +170,14 @@ async fn execute_run(
         .await
         .ok();
     let (done_tx, done_rx) = tokio::sync::mpsc::unbounded_channel();
-    let core = Core::new(run_id, env.deps.clone(), vec![]);
     let mut exec = Exec {
         env,
         wf,
         cancel_requested: run.cancel_requested_at.is_some(),
         run,
-        core,
-        driver: None,
-        status: DriverStatus::Pending,
+        replay: ReplayHandle::new(run_id, vec![]),
+        host: None,
+        status: ExecStatus::Pending,
         history: history::normalize(events.clone()),
         last_seq: events.last().map_or(0, |e| e.seq),
         raw: events,
@@ -202,8 +197,8 @@ async fn execute_run(
     };
     let result = exec.run_loop().await;
     exec.abort_all();
-    if let Some(d) = exec.driver.as_mut() {
-        d.interrupt();
+    if let Some(h) = exec.host.as_mut() {
+        h.interrupt();
     }
     exec.streams.shutdown().await;
     if matches!(
@@ -262,11 +257,12 @@ async fn store_history(env: &EngineEnv, run_id: RunId, last_seq: u64, events: &[
 
 struct Exec<'a> {
     env: &'a EngineEnv,
-    wf: &'a dyn ErasedWorkflow,
+    wf: &'a dyn HostWorkflow,
     run: Run,
-    core: Arc<Core>,
-    driver: Option<Driver>,
-    status: DriverStatus,
+    replay: ReplayHandle,
+    /// The workflow body, run by its host. `None` until the first rebuild.
+    host: Option<Box<dyn HostExecution>>,
+    status: ExecStatus,
     history: Vec<Event>,
     /// The log exactly as stored (`history` is normalized for replay).
     raw: Vec<Event>,
@@ -303,31 +299,45 @@ impl Exec<'_> {
         }
     }
 
+    fn fault(&self) -> Option<String> {
+        self.replay.with(|r| r.fault().map(str::to_string))
+    }
+
+    fn frontier(&self) -> Vec<Pending> {
+        self.replay.with(|r| r.frontier())
+    }
+
     /// (Re)build the workflow from history. Running steps survive: the engine
-    /// owns their tasks, not the workflow future.
+    /// owns their tasks, not the workflow body.
     async fn rebuild(&mut self) {
-        if let Some(old) = self.driver.as_mut() {
+        if let Some(mut old) = self.host.take() {
             old.interrupt();
         }
-        self.core = Core::new(self.run.id, self.env.deps.clone(), self.history.clone());
-        let mut driver = self.wf.start(self.core.clone(), self.run.input.clone());
-        self.status = driver::replay(&self.core, &mut driver).await;
-        self.driver = Some(driver);
+        self.replay = ReplayHandle::new(self.run.id, self.history.clone());
+        let mut exec = self.wf.start(ExecEnv {
+            run_id: self.run.id,
+            input: self.run.input.clone(),
+            replay: self.replay.clone(),
+            deps: self.env.deps.clone(),
+            pool: self.env.pool.clone(),
+        });
+        self.status = host::replay(&self.replay, &mut *exec, ExecStatus::Pending).await;
+        self.host = Some(exec);
     }
 
     async fn run_loop(&mut self) -> Result<Outcome> {
         self.rebuild().await;
         loop {
-            if let Some(msg) = self.core.fault() {
+            if let Some(msg) = self.fault() {
                 return self.on_fault(msg).await;
             }
             if self.cancel_requested {
                 return self.on_cancel().await;
             }
-            if let DriverStatus::Finished(res) = self.status.clone() {
+            if let ExecStatus::Finished(res) = self.status.clone() {
                 return self.on_finished(res).await;
             }
-            let frontier = self.core.frontier();
+            let frontier = self.frontier();
             self.reap(&frontier);
             let decision = durable_sm::decide(&DecideInput {
                 frontier: &frontier,
@@ -364,16 +374,14 @@ impl Exec<'_> {
                     continue;
                 }
                 Decision::Run { launch, wake_at } => {
-                    // A spent FnOnce body (an earlier attempt took it) needs a rebuild.
-                    if let Some(spent) = launch.iter().position(|l| !self.core.has_start(&l.key)) {
-                        for l in &launch[..spent] {
-                            self.launch(&l.key, l.attempt, l.timeout);
-                        }
+                    // A host that can no longer start a body (a Rust FnOnce an
+                    // earlier attempt took) needs a rebuild; launch the rest then.
+                    if !launch
+                        .iter()
+                        .all(|l| self.launch(&l.key, l.attempt, l.timeout))
+                    {
                         self.rebuild().await;
                         continue;
-                    }
-                    for l in &launch {
-                        self.launch(&l.key, l.attempt, l.timeout);
                     }
                     self.publish_steps().await;
                     wake_at
@@ -508,11 +516,9 @@ impl Exec<'_> {
             .collect();
         self.raw.extend(applied.iter().cloned());
         self.history.extend(applied.iter().cloned());
-        self.core.push_live(applied);
-        while self.core.advance() == Advance::RunCode {
-            if let Some(d) = self.driver.as_mut() {
-                self.status = d.poll().await;
-            }
+        self.replay.with(|r| r.push_live(applied));
+        if let Some(exec) = self.host.as_mut() {
+            self.status = host::replay(&self.replay, &mut **exec, self.status.clone()).await;
         }
         Ok(out)
     }
@@ -550,10 +556,8 @@ impl Exec<'_> {
         Ok(Some(Outcome::Suspended { wake_at }))
     }
 
-    fn launch(&mut self, key: &str, attempt: u32, timeout: Option<Duration>) {
-        let Some(start) = self.core.take_start(key) else {
-            return;
-        };
+    /// Start an attempt. `false` when the host can no longer start the body.
+    fn launch(&mut self, key: &str, attempt: u32, timeout: Option<Duration>) -> bool {
         let name = step_name(key);
         let span = tracing::info_span!(
             "step",
@@ -563,20 +567,10 @@ impl Exec<'_> {
             durable.step.name = name,
             durable.step.key = key,
             durable.step.attempt = attempt,
-            durable.step.kind = match &start {
-                StepStart::Async(_) => "async",
-                StepStart::Blocking(_) => "blocking",
-            },
+            durable.step.kind = tracing::field::Empty,
             durable.step.outcome = tracing::field::Empty,
             durable.step.error = tracing::field::Empty,
         );
-        // Best effort: lets watchers show the attempt as running. Not
-        // awaited, so it may land after this step's own `{"seq"}` notice;
-        // `watch` drops a `step_started` for an attempt it already saw end.
-        let backend = self.env.backend.clone();
-        let run_id = self.run.id;
-        let notice = json!({"step_started": {"key": key, "attempt": attempt}});
-        tokio::spawn(async move { notify_run(&backend, run_id, notice).await });
         let cancelled = Arc::new(AtomicBool::new(false));
         let heartbeat = self.env.heartbeat.clone();
         let info = StepInfo {
@@ -588,55 +582,48 @@ impl Exec<'_> {
             deps: self.env.deps.clone(),
             streams: self.streams.clone(),
         };
-        let (done_tx, key_owned) = (self.done_tx.clone(), key.to_string());
-        let mut aborts = vec![];
+        let Some(started) = self
+            .host
+            .as_mut()
+            .and_then(|h| h.start_step(key, attempt, info, &span))
+        else {
+            return false;
+        };
+        span.record("durable.step.kind", started.kind);
+        // Best effort: lets watchers show the attempt as running. Not
+        // awaited, so it may land after this step's own `{"seq"}` notice;
+        // `watch` drops a `step_started` for an attempt it already saw end.
+        let backend = self.env.backend.clone();
+        let run_id = self.run.id;
+        let notice = json!({"step_started": {"key": key, "attempt": attempt}});
+        tokio::spawn(async move { notify_run(&backend, run_id, notice).await });
 
-        // `result` resolves with the step outcome (or never, if aborted).
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<Value, StepError>>();
-        match start {
-            StepStart::Async(f) => {
-                let task = tokio::spawn(step::scope_async(info, f).instrument(span.clone()));
-                aborts.push(task.abort_handle());
-                tokio::spawn(async move {
-                    let r = match task.await {
-                        Ok(r) => r,
-                        Err(e) if e.is_panic() => Err(StepError::retryable(format!(
-                            "step panicked: {}",
-                            crate::driver::panic_message(e.into_panic())
-                        ))),
-                        Err(_) => return, // aborted
-                    };
-                    let _ = result_tx.send(r);
-                });
-            }
-            StepStart::Blocking(f) => {
-                let span = span.clone();
-                self.env.pool.execute(Box::new(move || {
-                    let _entered = span.enter();
-                    let r = catch_unwind(AssertUnwindSafe(|| step::scope_blocking(info, f)))
-                        .unwrap_or_else(|p| {
-                            Err(StepError::retryable(format!(
-                                "step panicked: {}",
-                                crate::driver::panic_message(p)
-                            )))
-                        });
-                    let _ = result_tx.send(r);
-                }));
-            }
-        }
-        let flag = cancelled.clone();
+        let task = tokio::spawn(started.fut.instrument(span.clone()));
+        let mut aborts = vec![task.abort_handle()];
+        let (done_tx, key_owned, flag) = (self.done_tx.clone(), key.to_string(), cancelled.clone());
         let forward = tokio::spawn(async move {
+            // `None`: the attempt was aborted and reports nothing.
+            let result = async {
+                match task.await {
+                    Ok(r) => Some(r),
+                    Err(e) if e.is_panic() => Some(Err(StepError::retryable(format!(
+                        "step panicked: {}",
+                        crate::driver::panic_message(e.into_panic())
+                    )))),
+                    Err(_) => None,
+                }
+            };
             let result = match timeout {
                 Some(d) => tokio::select! {
-                    r = result_rx => r,
+                    r = result => r,
                     _ = tokio::time::sleep(d) => {
                         flag.store(true, Ordering::SeqCst);
-                        Ok(Err(StepError::retryable(format!("step timed out after {d:?}"))))
+                        Some(Err(StepError::retryable(format!("step timed out after {d:?}"))))
                     }
                 },
-                None => result_rx.await,
+                None => result.await,
             };
-            if let Ok(result) = result {
+            if let Some(result) = result {
                 let _ = done_tx.send(StepDone {
                     key: key_owned,
                     attempt,
@@ -655,6 +642,7 @@ impl Exec<'_> {
                 span,
             },
         );
+        true
     }
 
     async fn on_step_done(&mut self, done: StepDone, frontier: &[Pending]) -> Result<()> {
@@ -728,22 +716,25 @@ impl Exec<'_> {
         Ok(())
     }
 
-    async fn on_finished(&mut self, res: Result<Value, WorkflowError>) -> Result<Outcome> {
-        match res {
+    async fn on_finished(&mut self, res: Result<Value, WorkflowFailure>) -> Result<Outcome> {
+        let error = match res {
             Ok(output) => {
                 self.finish_commit(EventKind::RunSucceeded { output })
                     .await?;
-                Ok(Outcome::Finished)
+                return Ok(Outcome::Finished);
             }
-            Err(WorkflowError::Cancelled) => self.on_cancel().await,
-            Err(WorkflowError::Interrupted) => {
+            Err(e) => e,
+        };
+        match error.kind {
+            FailureKind::Cancelled => self.on_cancel().await,
+            FailureKind::Interrupted => {
                 self.on_fault("workflow body returned Interrupted without being interrupted".into())
                     .await
             }
-            Err(e) if e.is_engine_fault() => self.on_fault(e.to_string()).await,
-            Err(e) => {
+            FailureKind::Fault => self.on_fault(error.message).await,
+            FailureKind::Failed | FailureKind::Step | FailureKind::HookConflict => {
                 self.finish_commit(EventKind::RunFailed {
-                    error: e.to_string(),
+                    error: error.message,
                 })
                 .await?;
                 Ok(Outcome::Finished)
@@ -753,7 +744,7 @@ impl Exec<'_> {
 
     async fn on_cancel(&mut self) -> Result<Outcome> {
         self.abort_all();
-        self.core.cancel();
+        self.replay.with(Replayer::cancel);
         let reason = self
             .env
             .backend
@@ -802,7 +793,7 @@ impl Exec<'_> {
             .saturating_mul(2u32.saturating_pow(attempt.clamp(1, 16) as u32 - 1))
             .min(Duration::from_secs(300));
         let retry_at = saturating_add(at, backoff);
-        let frontier = self.core.frontier();
+        let frontier = self.frontier();
         let mut c = self.build_commit(
             vec![],
             vec![],

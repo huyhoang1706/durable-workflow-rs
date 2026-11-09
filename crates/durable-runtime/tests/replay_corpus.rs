@@ -688,3 +688,267 @@ fn kind_name(k: &EventKind) -> String {
         .unwrap()
         .to_string()
 }
+
+/// A host with no Rust futures and no `Driver`: it replays a corpus trace,
+/// making the recorded replayer calls at each activation, and answers step
+/// launches with the outcomes in the case's history. The engine cannot tell
+/// it from a real binding, so this checks that the host abstraction carries
+/// everything a binding needs, live phase included.
+mod scripted {
+    use std::{collections::HashMap, sync::Arc};
+
+    use durable_runtime::{
+        ErrorClass, StepError, WorkflowOptions,
+        deps::DepKey,
+        host::{ExecEnv, ExecStatus, HostExecution, HostWorkflow, ReplayHandle, StepAttempt},
+        step::StepInfo,
+    };
+    use durable_sm::{Handle, Resolution, Resolved, TraceOp};
+    use durable_spi::{EventKind, WorkflowDefinition};
+    use durable_testkit::corpus::{Case, Finish};
+    use futures::FutureExt;
+
+    pub struct ScriptedHost {
+        workflow: String,
+        case: Arc<Case>,
+    }
+
+    impl ScriptedHost {
+        pub fn new(case: Case) -> Self {
+            Self {
+                workflow: case.workflow.clone(),
+                case: Arc::new(case),
+            }
+        }
+    }
+
+    impl HostWorkflow for ScriptedHost {
+        fn name(&self) -> &str {
+            &self.workflow
+        }
+        fn definition(&self) -> WorkflowDefinition {
+            WorkflowOptions::default().definition(&self.workflow)
+        }
+        fn required_deps(&self) -> Vec<DepKey> {
+            vec![]
+        }
+        fn start(&self, env: ExecEnv) -> Box<dyn HostExecution> {
+            // One segment per `advance`: what it resolved, then the calls the
+            // code made in response.
+            let mut segments: Vec<(Vec<Resolved>, Vec<TraceOp>)> = vec![];
+            for op in &self.case.trace {
+                match op {
+                    TraceOp::Advance { resolved, .. } => segments.push((resolved.clone(), vec![])),
+                    op => segments
+                        .last_mut()
+                        .expect("a trace starts with an advance")
+                        .1
+                        .push(op.clone()),
+                }
+            }
+            Box::new(Execution {
+                case: self.case.clone(),
+                replay: env.replay,
+                segments,
+                next: 0,
+                handles: HashMap::new(),
+            })
+        }
+    }
+
+    struct Execution {
+        case: Arc<Case>,
+        replay: ReplayHandle,
+        segments: Vec<(Vec<Resolved>, Vec<TraceOp>)>,
+        next: usize,
+        handles: HashMap<String, Handle>,
+    }
+
+    impl Execution {
+        fn mismatch(&self, what: String) -> ExecStatus {
+            self.replay
+                .with(|r| r.set_fault(format!("scripted host: {what}")));
+            ExecStatus::Pending
+        }
+
+        /// Make the recorded calls of segment `self.next`.
+        fn play_segment(&mut self) -> Result<(), String> {
+            let ops = self.segments[self.next].1.clone();
+            self.next += 1;
+            let same_seed = self.replay.with(|r| r.run_id()) == self.case.run_id;
+            for op in ops {
+                self.replay.with(|r| -> Result<(), String> {
+                    match op {
+                        TraceOp::UserKey { name, key } => expect_key(r.user_key(&name), key),
+                        TraceOp::KeyFor { name, key } => expect_key(r.key_for(&name), key),
+                        TraceOp::CheckName { name } => {
+                            r.check_name(&name);
+                            Ok(())
+                        }
+                        TraceOp::Issue { key, command } => {
+                            let h = r.issue(key.clone(), command);
+                            self.handles.insert(key, h);
+                            Ok(())
+                        }
+                        TraceOp::Release { key } => {
+                            r.release(self.handles[&key]);
+                            Ok(())
+                        }
+                        // Seeded by the run id, so only a replay of the
+                        // recorded run reproduces the values.
+                        TraceOp::Random { value } => {
+                            let got = r.random_u64();
+                            match !same_seed || got == value {
+                                true => Ok(()),
+                                false => Err(format!("random {got}, recorded {value}")),
+                            }
+                        }
+                        TraceOp::Uuid { value } => {
+                            let got = r.uuid();
+                            match !same_seed || got == value {
+                                true => Ok(()),
+                                false => Err(format!("uuid {got}, recorded {value}")),
+                            }
+                        }
+                        TraceOp::SetFault { message } => {
+                            r.set_fault(message);
+                            Ok(())
+                        }
+                        // Engine-side calls, not the code's.
+                        TraceOp::Interrupt | TraceOp::Cancel | TraceOp::Advance { .. } => Ok(()),
+                    }
+                })?;
+            }
+            Ok(())
+        }
+
+        /// Segments with no resolutions: the code reran with nothing new.
+        fn play_unresolved(&mut self) -> Result<(), String> {
+            while self.next < self.segments.len() && self.segments[self.next].0.is_empty() {
+                self.play_segment()?;
+            }
+            Ok(())
+        }
+
+        fn activate_sync(&mut self, resolved: Vec<(Handle, Resolution)>) -> Result<(), String> {
+            if self.next == 0 {
+                return self.play_unresolved();
+            }
+            if resolved.is_empty() {
+                // Live events that resolve nothing (`timer_scheduled`, ...).
+                return Ok(());
+            }
+            let got: Vec<Resolved> = resolved
+                .into_iter()
+                .map(|(h, resolution)| Resolved {
+                    key: self.replay.with(|r| r.key_of(h).unwrap_or("?").to_string()),
+                    resolution,
+                })
+                .collect();
+            match self.segments.get(self.next) {
+                Some((want, _)) if *want == got => {}
+                want => return Err(format!("resolved {got:?}, recorded {want:?}")),
+            }
+            self.play_segment()?;
+            self.play_unresolved()
+        }
+    }
+
+    fn expect_key(got: String, recorded: String) -> Result<(), String> {
+        match got == recorded {
+            true => Ok(()),
+            false => Err(format!("key `{got}`, recorded `{recorded}`")),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HostExecution for Execution {
+        async fn activate(&mut self, resolved: Vec<(Handle, Resolution)>) -> ExecStatus {
+            if let Err(e) = self.activate_sync(resolved) {
+                return self.mismatch(e);
+            }
+            match (&self.case.result, self.next == self.segments.len()) {
+                (Some(Finish::Ok(v)), true) => ExecStatus::Finished(Ok(v.clone())),
+                (Some(Finish::Err(e)), true) => ExecStatus::Finished(Err(e.clone())),
+                _ => ExecStatus::Pending,
+            }
+        }
+
+        fn start_step(
+            &mut self,
+            key: &str,
+            attempt: u32,
+            _info: StepInfo,
+            _span: &tracing::Span,
+        ) -> Option<StepAttempt> {
+            // The attempt's outcome as history recorded it; never finishes if
+            // history has none.
+            let outcome = self.case.history.iter().find_map(|e| match &e.kind {
+                EventKind::StepFailed {
+                    key: k,
+                    attempt: a,
+                    error,
+                    retryable,
+                    ..
+                } if k == key && *a == attempt => Some(Err(StepError {
+                    message: error.clone(),
+                    class: match retryable {
+                        true => ErrorClass::Retryable,
+                        false => ErrorClass::Fatal,
+                    },
+                })),
+                EventKind::StepSucceeded { key: k, output } if k == key => Some(Ok(output.clone())),
+                _ => None,
+            });
+            Some(StepAttempt {
+                kind: "scripted",
+                fut: async move {
+                    match outcome {
+                        Some(r) => r,
+                        None => std::future::pending().await,
+                    }
+                }
+                .boxed(),
+            })
+        }
+
+        fn interrupt(&mut self) {}
+    }
+}
+
+#[tokio::test]
+async fn a_scripted_host_runs_corpus_workflows_on_the_real_engine() {
+    for name in [
+        "sequential_steps",
+        "step_retry",
+        "signal",
+        "race_timer_wins",
+    ] {
+        let case = Case::load(&corpus::path(name)).unwrap();
+        let spec = specs().into_iter().find(|s| s.name == name).unwrap();
+        let mut h = Harness::new();
+        let host = std::sync::Arc::new(scripted::ScriptedHost::new(case.clone()));
+        let w = h.spawn(h.worker().register_host(host));
+        let id = h.start(&case.workflow, case.input.clone()).await;
+        (spec.drive)(&h, id).await;
+        let run = h.run(id).await;
+        let events = h.client.events(id).await.unwrap();
+        h.stop(w).await;
+
+        assert_eq!(run.last_error, None, "{name}");
+        match &case.result {
+            Some(Finish::Ok(v)) => assert_eq!(run.output.as_ref(), Some(v), "{name}"),
+            other => panic!("{name}: expected a recorded output, got {other:?}"),
+        }
+        // The engine wrote the same history (ids and generated values aside).
+        let shape = |events: &[durable_spi::Event]| -> Vec<(String, Option<String>)> {
+            events
+                .iter()
+                .filter(|e| !e.kind.is_terminal())
+                .map(|e| (kind_name(&e.kind), e.kind.key().map(str::to_string)))
+                .collect()
+        };
+        let written = durable_runtime::history::normalize(events);
+        assert_eq!(shape(&written), shape(&case.history), "{name}");
+    }
+}

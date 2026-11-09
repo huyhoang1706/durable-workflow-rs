@@ -1,0 +1,26 @@
+[package]
+name = "durable-typescript"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Node-API addon behind the durable-workflow TypeScript SDK."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+# The `napi_*` symbols only exist inside a Node process, so a test executable
+# cannot link. The binding is tested from TypeScript (`npm test`).
+test = false
+doctest = false
+
+[dependencies]
+durable-runtime.workspace = true
+durable-sm.workspace = true
+napi = { version = "3", default-features = false, features = ["napi6", "serde-json"] }
+napi-derive = "3"
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+[build-dependencies]
+napi-build = "2"

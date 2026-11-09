@@ -10,6 +10,8 @@ mod driver;
 mod engine;
 pub mod error;
 pub mod history;
+#[doc(hidden)]
+pub mod host;
 mod inflight;
 pub mod pool;
 pub mod retry;
