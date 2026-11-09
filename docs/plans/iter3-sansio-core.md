@@ -639,7 +639,8 @@ runs again, so no unwind is needed.
 
 ### Steps
 
-- `ctx.step(name, body, opts?)` stores `body` under the reserved key when the call is created. The engine's
+- `ctx.step(name, execute)` or `ctx.step(name, { execute, output?, retry?, timeoutMs? })` stores `execute` under
+  the reserved key when the call is created. The engine's
   `start_step(key, attempt, info)` becomes `execution.runStep(key, attempt, info)`, which calls the body with a
   `StepContext { key, attempt, idempotencyKey, signal: AbortSignal, heartbeat() }`. A JS function can be called
   again, so `start_step` never returns `None` and retries never rebuild.
@@ -667,9 +668,22 @@ A resolution of the wrong kind (history says `x` was a timer, the code awaits a 
 `setFault`, as Rust's `unexpected` does. Faults the replayer raises itself have the shared core's messages.
 
 TypeScript types vanish at runtime, so a payload cannot fail to deserialize the way a Rust `T` can. Calls that
-return a payload take an optional `decode: (json) => T` (a zod `parse` fits). When it throws, the host faults the run
-with "non-determinism: `key` no longer deserializes ...", as Rust does when serde fails. Without `decode` the value is
-passed through as is.
+return a payload take an optional schema instead: `output` on a step, `payload` on `waitForSignal`, `waitForEvent`
+and `createHook`. Any [Standard Schema](https://standardschema.dev) works (zod, valibot, arktype); the SDK copies the
+spec's interface and has no runtime dependency. The call's type is inferred from the schema, and a step's `execute`
+must return what the schema accepts:
+
+```ts
+const n = await ctx.step("count", { output: z.number(), execute: () => count() }); // n: number
+const ok = await ctx.waitForSignal("approval", { payload: z.object({ by: z.string() }) });
+```
+
+- A recorded value that does not fit faults the run with "non-determinism: `key` no longer deserializes ...", as
+  Rust does when serde fails. The code gets the schema's output (transforms apply).
+- A live step result that does not fit fails the attempt as fatal, before it is recorded, as Rust does for an output
+  that does not serialize. What is recorded is what `execute` returned, so replay runs the schema on the same value.
+- Replay cannot wait, so a schema that validates asynchronously is a fault.
+- Without a schema the value is passed through as `Json`.
 
 ### Determinism
 
@@ -721,7 +735,7 @@ cases, check 2 on TypeScript ports of all 22 (not only a subset), and unit tests
 - **On an abort, `activate` rejects every pending call.** A Rust driver polls the root future on every activation, so
   every pending `CmdFuture` sees the abort. The non-determinism cases need this: the body must finish with the fault
   in the same activation, as it does in Rust.
-- **The ports use only public API,** with two places where TypeScript has to say what Rust's types say: `decode` for
+- **The ports use only public API,** with two places where TypeScript has to say what Rust's types say: zod schemas for
   integers in `signal_timeout`, `hook` and `nondeterminism_output_type`, and a helper that formats `ctx.now()` the way
   chrono serializes it in `deterministic_helpers`. `sync_workflow` becomes an async body, since TypeScript has no
   blocking workflows.

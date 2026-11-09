@@ -15,6 +15,7 @@ import {
   FaultError,
 } from "./errors.ts";
 import { native, type NativeReplayer } from "./native.ts";
+import { validate, type StandardSchemaV1 } from "./schema.ts";
 import type { Command, Finish, Json, Resolution, WaitKind, WireRetryPolicy } from "./wire.ts";
 
 export interface RetryPolicy {
@@ -68,8 +69,38 @@ export interface StepContext {
 
 export type StepBody<T> = (step: StepContext) => T | Promise<T>;
 
-/** Turns a payload from history into the type the code expects. Throw if it no longer fits. */
-export type Decode<T> = (value: Json) => T;
+/** A schema for a value that crosses history: any Standard Schema (zod, valibot, arktype, ...). */
+export type Schema<Output = unknown, Input = unknown> = StandardSchemaV1<Input, Output>;
+
+/** A step, as an options object. `output` gives its result a type that is checked at runtime. */
+export interface StepOptions<T> {
+  execute: StepBody<T>;
+  retry?: Partial<RetryPolicy>;
+  /** Per-attempt limit. */
+  timeoutMs?: number;
+}
+
+/** As `StepOptions`, for each item of `ctx.map`. */
+export interface MapOptions<I, T> {
+  execute: (item: I, step: StepContext) => T | Promise<T>;
+  retry?: Partial<RetryPolicy>;
+  timeoutMs?: number;
+}
+
+/** Options of a wait for a signal or an event. */
+export interface WaitOptions<S extends Schema | undefined> {
+  /** Checks the payload, and types it. */
+  payload?: S;
+}
+
+/** Options of `ctx.createHook`. */
+export interface HookOptions<S extends Schema | undefined> extends WaitOptions<S> {
+  /** The token webhooks are sent to. Without one, the engine mints one. */
+  token?: string;
+}
+
+/** The type a payload schema yields, or `Json` without one. */
+type Payload<S> = S extends Schema ? StandardSchemaV1.InferOutput<S> : Json;
 
 /** What the engine passes to `runStep`. */
 export interface StepInfo {
@@ -261,19 +292,19 @@ export class Hook<T> {
   #exec: Execution;
   #key: string;
   readonly token: string;
-  #decode: Decode<T> | undefined;
+  #schema: Schema<T> | undefined;
 
   /** @internal */
-  constructor(exec: Execution, key: string, token: string, decode: Decode<T> | undefined) {
+  constructor(exec: Execution, key: string, token: string, schema: Schema<T> | undefined) {
     this.#exec = exec;
     this.#key = key;
     this.token = token;
-    this.#decode = decode;
+    this.#schema = schema;
   }
 
   recv(): WaitCall<T> {
     const key = this.#exec.replayer.keyFor(`${this.#key}[recv]`);
-    return new WaitCall(this.#exec, key, "hook", this.token, (r) => this.#exec.payload(key, r, this.#decode));
+    return new WaitCall(this.#exec, key, "hook", this.token, (r) => this.#exec.payload(key, r, this.#schema));
   }
 
   /** Release the token: later webhooks to it are rejected. The run keeps going. */
@@ -292,12 +323,6 @@ export type Selected<M extends Record<string, DurableCall<unknown>>> = {
   [K in keyof M]: { key: K; value: Awaited<M[K]> };
 }[keyof M];
 
-export interface StepOptions<T> {
-  retry?: Partial<RetryPolicy>;
-  timeoutMs?: number;
-  decode?: Decode<T>;
-}
-
 /** What workflow code calls. Every method is deterministic. */
 export class Ctx {
   #exec: Execution;
@@ -307,9 +332,26 @@ export class Ctx {
     this.#exec = exec;
   }
 
-  /** A step: `body` runs at most once per successful attempt, and its result is memoized by `name`. */
-  step<T>(name: string, body: StepBody<T>, opts: StepOptions<T> = {}): StepCall<T> {
-    return this.#exec.step(this.#exec.replayer.userKey(name), body, opts);
+  /**
+   * A step: `execute` runs until an attempt succeeds, and its result is memoized by `name`.
+   *
+   * ```ts
+   * const n = await ctx.step("charge", () => charge(order));
+   * const m = await ctx.step("count", { output: z.number(), execute: () => count(), retry: { maxAttempts: 5 } });
+   * ```
+   *
+   * With `output`, the result is checked against the schema: a live attempt whose result does not
+   * fit fails for good, and a recorded result that no longer fits (the code changed) faults the run
+   * with non-determinism, as serde does in the Rust SDK.
+   */
+  step<T>(name: string, execute: StepBody<T>): StepCall<T>;
+  step<S extends Schema>(
+    name: string,
+    opts: StepOptions<StandardSchemaV1.InferInput<S>> & { output: S },
+  ): StepCall<StandardSchemaV1.InferOutput<S>>;
+  step<T>(name: string, opts: StepOptions<T> & { output?: undefined }): StepCall<T>;
+  step(name: string, opts: StepBody<unknown> | (StepOptions<unknown> & { output?: Schema | undefined })): StepCall<unknown> {
+    return this.#exec.step(this.#exec.replayer.userKey(name), typeof opts === "function" ? { execute: opts } : opts);
   }
 
   /** A durable timer. */
@@ -321,33 +363,48 @@ export class Ctx {
     });
   }
 
-  /** Wait for signal `name`, sent to this run. */
-  waitForSignal<T = Json>(name: string, opts: { decode?: Decode<T> } = {}): WaitCall<T> {
-    return this.#wait("signal", name, opts.decode);
+  /**
+   * Wait for signal `name`, sent to this run. A `payload` schema checks and types the payload; one
+   * that no longer fits faults the run, as for a step's `output`.
+   */
+  waitForSignal<S extends Schema | undefined = undefined>(name: string, opts: WaitOptions<S> = {}): WaitCall<Payload<S>> {
+    return this.#wait("signal", name, opts.payload);
   }
 
-  /** Wait for a published event `name`; narrow it with `.filter(json)`. */
-  waitForEvent<T = Json>(name: string, opts: { decode?: Decode<T> } = {}): WaitCall<T> {
-    return this.#wait("event", name, opts.decode);
+  /** Wait for a published event `name`; narrow it with `.filter(json)`. `payload` as for signals. */
+  waitForEvent<S extends Schema | undefined = undefined>(name: string, opts: WaitOptions<S> = {}): WaitCall<Payload<S>> {
+    return this.#wait("event", name, opts.payload);
   }
 
-  /** A webhook endpoint for this run. Without `token`, the engine mints one. */
-  createHook<T = Json>(name: string, opts: { token?: string; decode?: Decode<T> } = {}): DurableCall<Hook<T>> {
+  /** A webhook endpoint for this run. `payload` as for signals. */
+  createHook<S extends Schema | undefined = undefined>(name: string, opts: HookOptions<S> = {}): DurableCall<Hook<Payload<S>>> {
     const exec = this.#exec;
     const key = exec.replayer.userKey(name);
     return new DurableCall(exec, key, () => ({ type: "hook", token: opts.token ?? null }), (r) => {
       if (r.type !== "hook") throw exec.unexpected(key, r);
       if (r.conflict) throw new HookConflictError(r.token);
-      return new Hook<T>(exec, key, r.token, opts.decode);
+      return new Hook<Payload<S>>(exec, key, r.token, opts.payload as Schema<Payload<S>> | undefined);
     });
   }
 
-  /** Run `body` for each item as parallel steps `name[0]`, `name[1]`, ... */
-  map<I, T>(name: string, items: I[], body: (item: I, step: StepContext) => T | Promise<T>, opts: StepOptions<T> = {}): Promise<T[]> {
+  /** Run `execute` for each item as parallel steps `name[0]`, `name[1]`, ... Options as for `step`. */
+  map<I, T>(name: string, items: I[], execute: (item: I, step: StepContext) => T | Promise<T>): Promise<T[]>;
+  map<I, S extends Schema>(
+    name: string,
+    items: I[],
+    opts: MapOptions<I, StandardSchemaV1.InferInput<S>> & { output: S },
+  ): Promise<StandardSchemaV1.InferOutput<S>[]>;
+  map<I, T>(name: string, items: I[], opts: MapOptions<I, T> & { output?: undefined }): Promise<T[]>;
+  map<I>(
+    name: string,
+    items: I[],
+    opts: MapOptions<I, unknown>["execute"] | (MapOptions<I, unknown> & { output?: Schema | undefined }),
+  ): Promise<unknown[]> {
     const exec = this.#exec;
+    const { execute, ...rest } = typeof opts === "function" ? { execute: opts } : opts;
     exec.replayer.checkName(name);
     const calls = items.map((item, i) =>
-      exec.step<T>(exec.replayer.keyFor(`${name}[${i}]`), (s) => body(item, s), opts),
+      exec.step(exec.replayer.keyFor(`${name}[${i}]`), { ...rest, execute: (s) => execute(item, s) }),
     );
     return Promise.all(calls);
   }
@@ -411,10 +468,10 @@ export class Ctx {
     return this.#exec.replayer.isReplaying();
   }
 
-  #wait<T>(kind: WaitKind, name: string, decode: Decode<T> | undefined): WaitCall<T> {
+  #wait<T>(kind: WaitKind, name: string, schema: Schema | undefined): WaitCall<T> {
     const exec = this.#exec;
     const key = exec.replayer.userKey(name);
-    return new WaitCall<T>(exec, key, kind, name, (r) => exec.payload(key, r, decode));
+    return new WaitCall<T>(exec, key, kind, name, (r) => exec.payload(key, r, schema as Schema<T> | undefined));
   }
 }
 
@@ -422,6 +479,10 @@ function waitForMicrotasks(): Promise<void> {
   // Every microtask (settled promises, the `then` calls that issue commands)
   // runs before the next macrotask.
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+function asyncSchema(key: string): string {
+  return `the schema for \`${key}\` validates asynchronously; durable calls need a synchronous schema`;
 }
 
 function toJson(v: unknown, what: string): Json {
@@ -436,7 +497,7 @@ export class Execution {
   #workflow: Workflow<any, any>;
   #input: unknown;
   #waiters = new Map<number, Waiter>();
-  #bodies = new Map<string, StepBody<unknown>>();
+  #steps = new Map<string, { execute: StepBody<unknown>; output: Schema | undefined }>();
   #attempts = new Map<string, AbortController>();
   #started = false;
   #result: Finish | undefined;
@@ -469,23 +530,34 @@ export class Execution {
 
   /** Run attempt `attempt` of the step issued under `key`. */
   async runStep(key: string, attempt: number, info: StepInfo): Promise<StepOutcome> {
-    const body = this.#bodies.get(key);
-    if (!body) return { err: { message: `no step body for \`${key}\``, class: { type: "fatal" } } };
+    const step = this.#steps.get(key);
+    if (!step) return { err: { message: `no step body for \`${key}\``, class: { type: "fatal" } } };
     const controller = new AbortController();
     this.#attempts.set(`${key}:${attempt}`, controller);
     try {
-      const value = await body({
+      const value = await step.execute({
         key,
         attempt,
         idempotencyKey: info.idempotencyKey,
         signal: controller.signal,
         heartbeat: () => info.heartbeat?.(),
       });
+      let ok: Json;
       try {
-        return { ok: toJson(value, "step output") };
+        ok = toJson(value, "step output");
       } catch (e) {
         return { err: { message: (e as Error).message, class: { type: "fatal" } } };
       }
+      if (step.output) {
+        // Check what will be recorded, not what the schema makes of it: replay
+        // runs the schema again on the recorded value.
+        const v = validate(step.output, ok);
+        if (v.ok === "async") return { err: { message: asyncSchema(key), class: { type: "fatal" } } };
+        if (!v.ok) {
+          return { err: { message: `step output does not match its schema: ${v.message}`, class: { type: "fatal" } } };
+        }
+      }
+      return { ok };
     } catch (e) {
       if (e instanceof StepError) return { err: { message: e.message, class: e.class } };
       return { err: { message: e instanceof Error ? e.message : String(e), class: { type: "retryable" } } };
@@ -525,12 +597,12 @@ export class Execution {
   }
 
   /** @internal */
-  step<T>(key: string, body: StepBody<T>, opts: StepOptions<T>): StepCall<T> {
-    this.#bodies.set(key, body as StepBody<unknown>);
-    const call = new StepCall<T>(this, key, (r) => {
+  step(key: string, opts: StepOptions<unknown> & { output?: Schema | undefined }): StepCall<unknown> {
+    this.#steps.set(key, { execute: opts.execute, output: opts.output });
+    const call = new StepCall<unknown>(this, key, (r) => {
       switch (r.type) {
         case "step_succeeded":
-          return this.decode(key, r.value, opts.decode);
+          return this.decode(key, r.value, opts.output);
         case "step_failed":
           throw new StepFailedError(key, r.failure.message, r.failure.retryable);
         default:
@@ -543,21 +615,21 @@ export class Execution {
   }
 
   /** @internal A wait's payload; `null` when it timed out. */
-  payload<T>(key: string, r: Resolution, decode: Decode<T> | undefined): T {
+  payload<T>(key: string, r: Resolution, schema: Schema<T> | undefined): T {
     if (r.type !== "signal") throw this.unexpected(key, r);
-    return r.payload === null ? (null as T) : this.decode(key, r.payload, decode);
+    return r.payload === null ? (null as T) : this.decode(key, r.payload, schema);
   }
 
-  /** @internal */
-  decode<T>(key: string, value: Json, decode: Decode<T> | undefined): T {
-    if (!decode) return value as T;
-    try {
-      return decode(value);
-    } catch (e) {
-      return this.#nonDeterminism(
-        `\`${key}\` no longer deserializes into the requested type: ${e instanceof Error ? e.message : String(e)}`,
-      );
+  /** @internal A recorded value, through the code's schema if it has one. */
+  decode<T>(key: string, value: Json, schema: Schema<T> | undefined): T {
+    if (!schema) return value as T;
+    const v = validate(schema, value);
+    if (v.ok === "async") {
+      this.replayer.setFault(asyncSchema(key));
+      throw new FaultError(asyncSchema(key));
     }
+    if (!v.ok) return this.#nonDeterminism(`\`${key}\` no longer deserializes into the requested type: ${v.message}`);
+    return v.value;
   }
 
   /** @internal */

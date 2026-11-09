@@ -9,14 +9,17 @@ export {
   WaitCall,
   retry,
   workflow,
-  type Decode,
+  type HookOptions,
+  type MapOptions,
   type ExecStatus,
   type RetryPolicy,
+  type Schema,
   type Selected,
   type StepBody,
   type StepContext,
   type StepInfo,
   type StepOptions,
+  type WaitOptions,
   type StepOutcome,
   type Workflow,
   type WorkflowBody,
@@ -34,4 +37,5 @@ export {
   type ErrorClass,
 } from "./errors.ts";
 export { replay, type ReplayOutcome } from "./replay.ts";
+export type { StandardSchemaV1 } from "./schema.ts";
 export type * from "./wire.ts";

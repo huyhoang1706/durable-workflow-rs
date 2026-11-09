@@ -2,16 +2,15 @@
 // by case name. For the non-determinism cases this is the *changed* version
 // that replays the history.
 
+import { z } from "zod";
+
 import { StepError, StepFailedError, retry, workflow, type Workflow } from "../ts/index.ts";
-import type { Json } from "../ts/wire.ts";
 
 /** RFC 3339 as chrono serializes it: no fractional seconds when there are none. */
 const rfc3339 = (d: Date) => d.toISOString().replace(".000Z", "Z");
 
-const integer = (v: Json): number => {
-  if (typeof v !== "number" || !Number.isInteger(v)) throw new TypeError(`expected an integer, got ${JSON.stringify(v)}`);
-  return v;
-};
+/** What Rust's `i64` accepts. */
+const integer = z.number().int();
 
 const race = workflow("race", async (ctx) => {
   const winner = await ctx.select({
@@ -49,9 +48,12 @@ export const ports: Record<string, Workflow<any, any>> = {
 
   step_failure_recovered: workflow("recover", async (ctx) => {
     try {
-      await ctx.step("bad", (): number => {
-        throw StepError.retryable("always");
-      }, { retry: retry.none() });
+      await ctx.step("bad", {
+        execute: (): number => {
+          throw StepError.retryable("always");
+        },
+        retry: retry.none(),
+      });
       throw new Error("unexpected success");
     } catch (e) {
       if (e instanceof StepFailedError) return `recovered from ${e.message.replace(/^step failed: /, "")}`;
@@ -75,14 +77,14 @@ export const ports: Record<string, Workflow<any, any>> = {
   signal: workflow("approve", (ctx) => ctx.waitForSignal("approval")),
 
   signal_timeout: workflow("timeout-wait", (ctx) =>
-    ctx.waitForSignal("approval", { decode: integer }).timeout(300_000),
+    ctx.waitForSignal("approval", { payload: integer }).timeout(300_000),
   ),
 
   race_timer_wins: race,
   race_signal_wins: race,
 
   hook: workflow("hooked", async (ctx) => {
-    const hook = await ctx.createHook("callback", { token: "corpus-hook", decode: integer });
+    const hook = await ctx.createHook("callback", { token: "corpus-hook", payload: integer });
     const first = await hook.recv();
     const second = await hook.recv();
     await hook.dispose();
@@ -95,7 +97,7 @@ export const ports: Record<string, Workflow<any, any>> = {
   }),
 
   event_filter: workflow("order", async (ctx, id: number) => {
-    const paid = await ctx.waitForEvent<{ amount: Json }>("order.paid").filter({ order_id: id });
+    const paid = await ctx.waitForEvent("order.paid", { payload: z.object({ amount: z.number() }) }).filter({ order_id: id });
     return paid.amount;
   }),
 
@@ -130,5 +132,5 @@ export const ports: Record<string, Workflow<any, any>> = {
     return null;
   }),
 
-  nondeterminism_output_type: workflow("typed", (ctx) => ctx.step("name", () => 1, { decode: integer })),
+  nondeterminism_output_type: workflow("typed", (ctx) => ctx.step("name", { output: integer, execute: () => 1 })),
 };
