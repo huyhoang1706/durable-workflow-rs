@@ -1,7 +1,6 @@
 // The host loop's step side: what the engine will call in S2.
 
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { Execution, StepError, workflow, type Ctx } from "../ts/index.ts";
 import { native } from "../ts/native.ts";
@@ -14,7 +13,7 @@ const started: Event = { run_id: runId, seq: 1, at: "2030-01-01T00:00:00Z", kind
 async function start(body: (ctx: Ctx) => PromiseLike<unknown>): Promise<Execution> {
   const r = new native.Replayer(runId, [started]);
   const exec = new Execution(workflow("t", body), r, null);
-  assert.equal(r.advance(), "run_code");
+  expect(r.advance()).toBe("run_code");
   await exec.activate(r.takeResolved());
   return exec;
 }
@@ -24,8 +23,8 @@ const info = { idempotencyKey: `${runId}:k` };
 test("a step body runs on demand, as often as the engine asks", async () => {
   let calls = 0;
   const exec = await start((ctx) => ctx.step("k", (s) => ({ attempt: s.attempt, calls: ++calls, at: new Date(0) })));
-  assert.deepEqual(await exec.runStep("k", 1, info), { ok: { attempt: 1, calls: 1, at: "1970-01-01T00:00:00.000Z" } });
-  assert.deepEqual(await exec.runStep("k", 2, info), { ok: { attempt: 2, calls: 2, at: "1970-01-01T00:00:00.000Z" } });
+  expect(await exec.runStep("k", 1, info)).toStrictEqual({ ok: { attempt: 1, calls: 1, at: "1970-01-01T00:00:00.000Z" } });
+  expect(await exec.runStep("k", 2, info)).toStrictEqual({ ok: { attempt: 2, calls: 2, at: "1970-01-01T00:00:00.000Z" } });
 });
 
 test("thrown values pick the failure class", async () => {
@@ -43,13 +42,13 @@ test("thrown values pick the failure class", async () => {
       ctx.step("bigint", () => 1n),
     ]);
   });
-  assert.deepEqual(await exec.runStep("fatal", 1, info), { err: { message: "no", class: { type: "fatal" } } });
-  assert.deepEqual(await exec.runStep("later", 1, info), {
+  expect(await exec.runStep("fatal", 1, info)).toStrictEqual({ err: { message: "no", class: { type: "fatal" } } });
+  expect(await exec.runStep("later", 1, info)).toStrictEqual({
     err: { message: "busy", class: { type: "retry_after", ms: 5_000 } },
   });
-  assert.deepEqual(await exec.runStep("plain", 1, info), { err: { message: "boom", class: { type: "retryable" } } });
+  expect(await exec.runStep("plain", 1, info)).toStrictEqual({ err: { message: "boom", class: { type: "retryable" } } });
   const big = await exec.runStep("bigint", 1, info);
-  assert.ok("err" in big && big.err.class.type === "fatal", JSON.stringify(big));
+  expect(big).toMatchObject({ err: { class: { type: "fatal" } } });
 });
 
 test("abortStep aborts the attempt's signal", async () => {
@@ -62,8 +61,8 @@ test("abortStep aborts the attempt's signal", async () => {
   );
   const outcome = exec.runStep("slow", 1, info);
   exec.abortStep("slow", 1);
-  assert.equal(signal?.aborted, true);
-  assert.deepEqual(await outcome, { ok: "aborted" });
+  expect(signal?.aborted).toBe(true);
+  expect(await outcome).toStrictEqual({ ok: "aborted" });
 });
 
 test("a call cannot be configured once awaited", async () => {
@@ -77,12 +76,12 @@ test("a call cannot be configured once awaited", async () => {
       error = e;
     }
   });
-  assert.match(String(error), /cannot be configured after it has been awaited/);
+  expect(String(error)).toMatch(/cannot be configured after it has been awaited/);
 });
 
 test("a body that awaits nothing durable finishes in its first activation", async () => {
   const r = new native.Replayer(runId, [started]);
   const exec = new Execution(workflow("t", async () => ({ n: 1, skip: undefined })), r, null);
   r.advance();
-  assert.deepEqual(await exec.activate(r.takeResolved()), { status: "finished", result: { ok: { n: 1 } } });
+  expect(await exec.activate(r.takeResolved())).toStrictEqual({ status: "finished", result: { ok: { n: 1 } } });
 });

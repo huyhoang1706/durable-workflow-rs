@@ -14,5 +14,5 @@
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true
   },
-  "include": ["ts", "test"]
+  "include": ["ts", "test", "tsdown.config.ts", "vitest.config.ts"]
 }

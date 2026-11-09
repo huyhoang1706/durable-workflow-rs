@@ -22,9 +22,9 @@ if cargo tree -p durable-sm -e normal | grep -qE ' (tokio|futures|async-trait)[a
 fi
 
 # The TypeScript binding: the native addon, type checks and the corpus checks
-# through the FFI. Needs Node >= 22.18 (it runs the .ts tests directly).
+# through the FFI (Vitest), and the tsdown bundle. Needs Node >= 22.18.
 if command -v node >/dev/null; then
-    (cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test)
+    (cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test && npm run build)
 else
     echo "warning: node not found; skipping the TypeScript binding" >&2
 fi

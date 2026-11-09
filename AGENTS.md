@@ -10,7 +10,7 @@ cargo test -p durable-runtime --test engine_async <name>     # one test
 cargo test -p durable-workflow --test compile_fail           # trybuild UI tests for the macros (tests/ui/*.stderr)
 DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus   # rewrite the replay conformance corpus (durable-testkit/corpus)
 docker compose up -d                      # postgres:17 + redis:7 for the examples
-cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test   # TypeScript binding (Node >= 22.18)
+cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test && npm run build   # TypeScript binding (Node >= 22.18): TS 7, Vitest, tsdown
 ```
 
 Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-sm`, `durable-spi`, `durable-runtime`, `durable-testkit`, `durable-memory` and `durable-macros`.

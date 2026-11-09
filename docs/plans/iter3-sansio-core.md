@@ -562,9 +562,11 @@ follows the P3a sketch for Node; this section settles what the sketch left open.
 ```
 bindings/typescript/
   Cargo.toml, build.rs, src/lib.rs   crate `durable-typescript`: a napi-rs cdylib, not published to crates.io
-  package.json, tsconfig.json        npm package, ESM only, Node >= 22.18
+  package.json, tsconfig.json        npm package, ESM only, Node >= 22.18, TypeScript 7
+  tsdown.config.ts                   bundles ts/ into dist/index.mjs + dist/index.d.mts
+  vitest.config.ts                   unit tests
   ts/                                the SDK: workflow(), ctx, the host loop, the native loader
-  test/                              node:test suites, run straight from .ts (Node strips the types)
+  test/                              Vitest suites
   scripts/build-native.mjs           cargo build + copy the addon to durable.node
 ```
 
@@ -692,7 +694,7 @@ Three checks, in the order the slices build them:
 | Slice | Work | Done when |
 |---|---|---|
 | S1 | Crate, native `Replayer`, the TypeScript ctx and `Execution` host loop, an offline replay driver, checks 1 and 2 | All 22 cases pass check 1; the ported cases pass check 2. |
-| S2 | `JsWorkflow` host over `ThreadsafeFunction`s, `Worker` + `Client` on the memory backend, `Worker.replay` | A TypeScript workflow runs steps, timers and signals on the real engine from `node --test`. |
+| S2 | `JsWorkflow` host over `ThreadsafeFunction`s, `Worker` + `Client` on the memory backend, `Worker.replay` | A TypeScript workflow runs steps, timers and signals on the real engine from Vitest. |
 | S3 | Backends by URL (`memory://`, `postgres://` + optional Redis) through `durable_workflow::connect`, hooks, events, `examples/typescript-onboarding`, chaos test | The P3 "done when" row. |
 | S4 | Prebuilt binaries, CI job, measure activation round trips and tiny-step throughput (open question 2) | Published, and the numbers are written down. |
 
@@ -703,9 +705,13 @@ cases, check 2 on TypeScript ports of all 22 (not only a subset), and unit tests
 `ci.sh` runs them when `node` is on the path. Where the code differs from the design above:
 
 - **No `@napi-rs/cli` yet.** `scripts/build-native.mjs` runs `cargo build -p durable-typescript` and copies the library
-  to `durable.node`. The TypeScript tests run straight from `.ts` with Node's type stripping, so the only npm
-  dependencies are `typescript` and `@types/node`, for `npm run typecheck`. The TypeScript is written to be erasable
-  (`erasableSyntaxOnly`): no enums, namespaces or parameter properties.
+  to `durable.node`. The TypeScript is written to be erasable (`erasableSyntaxOnly`): no enums, namespaces or
+  parameter properties.
+- **Toolchain:** TypeScript 7 (`npm run typecheck`), Vitest (`npm test`, forks pool) and tsdown (`npm run build`).
+  tsdown bundles `ts/index.ts` into `dist/index.mjs` and emits `dist/index.d.mts` with TypeScript 7's Go compiler
+  (it warns that its TypeScript 7.0 backend is deprecated in favour of 7.1, still in beta). The package's `exports`
+  point at `dist/`, and `files` ships `dist/` and `durable.node`. `dist/` sits next to `ts/`, so the loader's
+  `../durable.node` resolves the same from source and from the bundle. Tests import the source, not `dist/`.
 - **The native `Replayer` is the whole addon so far,** plus `defaultRetryPolicy()`, so TypeScript never copies Rust's
   defaults. It already wraps a `ReplayHandle`, so S2 can hand JavaScript the replayer of an engine execution.
 - **`select` is how a race of mixed types is written.** `ctx.select({ signal, timeout })` resolves to
