@@ -1,9 +1,13 @@
 {
   "name": "@durable/typescript",
   "version": "0.1.0",
-  "private": true,
   "description": "Durable workflows in TypeScript, on the durable-workflow engine.",
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huyhoang1706/durable-workflow-rs.git",
+    "directory": "bindings/typescript"
+  },
   "type": "module",
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
@@ -15,21 +19,37 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist",
-    "durable.node"
+    "dist"
   ],
   "engines": {
     "node": ">=22.18"
   },
+  "napi": {
+    "binaryName": "durable",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
-    "build:native": "node scripts/build-native.mjs",
+    "build:native": "napi build --platform --no-js -p durable-typescript",
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:servers": "scripts/with-servers.sh vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:native:release": "napi build --platform --no-js --release --strip -p durable-typescript",
+    "bench": "node bench/tiny-steps.ts"
   },
   "devDependencies": {
+    "@napi-rs/cli": "^3.10.12",
     "@types/node": "^22.20.5",
     "tsdown": "^0.23.7",
     "typescript": "^7.0.2",

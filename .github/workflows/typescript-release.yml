@@ -1,0 +1,157 @@
+# Prebuilt addons for the TypeScript binding.
+#
+# Every run builds the addon on each platform, runs the binding's tests where
+# the runner can load it, packs the npm packages and smoke-tests them from a
+# clean project. Pushing a tag `typescript-v<version>` (the version in
+# bindings/typescript/package.json) also publishes them to npm: the platform
+# packages `@durable/typescript-<platform>` and then `@durable/typescript`,
+# which depends on them optionally. Publishing needs the NPM_TOKEN secret in
+# the `npm` environment.
+name: TypeScript release
+
+on:
+  push:
+    tags: ["typescript-v*"]
+  pull_request:
+    paths:
+      - bindings/typescript/**
+      - crates/**
+      - plugins/**
+      - Cargo.lock
+      - .github/workflows/typescript-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: bindings/typescript
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds run on the oldest supported Ubuntu, so the addon
+          # needs only that glibc (2.35).
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            test: true
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            test: true
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            test: true
+          # Cross-compiled on Apple silicon; nothing here can load it.
+          - target: x86_64-apple-darwin
+            runner: macos-15
+            test: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            test: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bindings/typescript/package-lock.json
+      - run: npm ci
+      - run: npx napi build --platform --no-js --release --strip --target ${{ matrix.target }} -p durable-typescript
+        shell: bash
+      # The memory-backend tests: no Docker on macOS and Windows runners. The
+      # Postgres/Redis cases skip without DURABLE_TEST_DATABASE_URL.
+      - if: matrix.test
+        run: npm run typecheck && npm test
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bindings/typescript/durable.*.node
+          if-no-files-found: error
+
+  package:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bindings/typescript/package-lock.json
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: bindings/typescript/artifacts
+      # Fails unless every target in package.json `napi.targets` was built.
+      - run: npx napi artifacts --output-dir artifacts
+      - run: npm run build
+      - name: Pack
+        run: |
+          mkdir -p ../../packages
+          for dir in npm/*/; do npm pack "$dir" --pack-destination ../../packages; done
+          npm pack --pack-destination ../../packages
+          ls -l ../../packages
+      - name: Smoke-test the packed packages from a clean project
+        run: node scripts/smoke-test.mjs ../../packages/durable-typescript-[0-9]*.tgz ../../packages/durable-typescript-linux-x64-gnu-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: packages/*.tgz
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/typescript-v')
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: bindings/typescript/package-lock.json
+      - name: Check the tag against package.json
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if [ "${GITHUB_REF_NAME}" != "typescript-v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package.json version ${version}" >&2
+            exit 1
+          fi
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: bindings/typescript/artifacts
+          pattern: bindings-*
+      - run: npx napi artifacts --output-dir artifacts
+      - run: npm run build
+      # Publishes each `npm/<platform>` package, then adds them to
+      # optionalDependencies; the main package goes last, so it never
+      # points at a platform package that is not on the registry.
+      - run: npx napi pre-publish -t npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

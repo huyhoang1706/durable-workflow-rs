@@ -1,0 +1,22 @@
+{
+  "name": "@durable/typescript-linux-arm64-gnu",
+  "version": "0.1.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "durable.linux-arm64-gnu.node",
+  "files": [
+    "durable.linux-arm64-gnu.node"
+  ],
+  "description": "Durable workflows in TypeScript, on the durable-workflow engine.",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

@@ -1,0 +1,35 @@
+# The whole suite, as `./ci.sh` runs it locally: fmt, clippy, the Rust tests
+# (Postgres/Redis through testcontainers), the TypeScript binding and its
+# example (Postgres/Redis containers started by scripts/with-servers.sh).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            bindings/typescript/package-lock.json
+            examples/typescript-onboarding/package-lock.json
+      - run: ./ci.sh

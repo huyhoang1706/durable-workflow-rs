@@ -122,6 +122,8 @@ interface Entry {
 class Host implements NativeHost {
   #workflows: Map<string, Workflow<any, any>>;
   #execs = new Map<number, Entry>();
+  /** Calls from the engine, counted for `Worker.stats`. */
+  stats = { activations: 0, steps: 0 };
 
   constructor(workflows: Map<string, Workflow<any, any>>) {
     this.#workflows = workflows;
@@ -134,11 +136,13 @@ class Host implements NativeHost {
   }
 
   async activate(id: number, resolved: { handle: number; resolution: Resolution }[]): Promise<ExecStatus> {
+    this.stats.activations++;
     return this.#entry(id).exec.activate(resolved);
   }
 
   async runStep(id: number, key: string, attempt: number, step: NativeStepHandle): Promise<WireStepOutcome> {
     const e = this.#entry(id);
+    this.stats.steps++;
     e.attempts++;
     try {
       const out = await e.exec.runStep(key, attempt, {
@@ -266,6 +270,11 @@ export class Worker {
   /** @internal Executions this worker still holds. */
   get executions(): number {
     return this.#host.size;
+  }
+
+  /** @internal How often the engine called into JavaScript: activations and step attempts. */
+  get stats(): { activations: number; steps: number } {
+    return { ...this.#host.stats };
   }
 
   #release(): void {

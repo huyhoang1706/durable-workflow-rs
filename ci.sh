@@ -27,7 +27,7 @@ fi
 # containers it starts (or on DURABLE_TEST_DATABASE_URL / _REDIS_URL if set).
 if command -v node >/dev/null; then
     (cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm run test:servers && npm run build)
-    # The example imports the built SDK (`dist/`, `durable.node`) from above.
+    # The example imports the built SDK (`dist/`, `durable.<platform>.node`) from above.
     (cd examples/typescript-onboarding && npm ci && npm run typecheck && npm run test:servers)
 else
     echo "warning: node not found; skipping the TypeScript binding" >&2

@@ -4,8 +4,8 @@ export default defineConfig({
   entry: ["ts/index.ts"],
   format: "esm",
   platform: "node",
-  // `dist/` sits next to `ts/`, so `../durable.node` in `native.ts` still
-  // points at the addon in the package root.
+  // `dist/` sits next to `ts/`, so `../durable.<platform>.node` in
+  // `native.ts` points at a local build in the package root either way.
   outDir: "dist",
   dts: true,
   sourcemap: true,
