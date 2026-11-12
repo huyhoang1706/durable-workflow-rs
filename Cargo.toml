@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "plugins/*", "examples/*", "bindings/typescript"]
+# A TypeScript example (npm), not a crate.
+exclude = ["examples/typescript-onboarding"]
 
 [workspace.package]
 version = "0.1.0"

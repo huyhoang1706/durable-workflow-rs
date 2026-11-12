@@ -807,7 +807,23 @@ containers on random host ports, exports the two URLs, runs the command and remo
 `npm run test:servers` is `vitest run` through it, and `ci.sh` runs that instead of `npm test`, so nothing is skipped
 in CI. Plain `npm test` still skips the server cases, so it needs no Docker.
 
-**Not done yet:** `examples/typescript-onboarding` and the chaos suite.
+**Step 3: `examples/typescript-onboarding`.** It is an npm project, not a crate, so it is excluded from the Cargo
+workspace. It depends on the SDK through `file:../../bindings/typescript` and imports the built package (`dist/`), as
+a user would. One process serves an HTTP API on `node:http` and runs an embedded worker; the backend comes from
+`DATABASE_URL` (default `memory://`) and `REDIS_URL`.
+
+- The workflow mirrors the Rust `user.onboarding` from `embedded-axum`: create the account, send a welcome mail (retry
+  and timeout), wait up to a day for `verified`, and send a reminder if it does not come. Services are passed into a
+  factory (`onboarding(services)`), which is how a TypeScript workflow gets the dependencies a Rust one gets through
+  `Dep`.
+- The tests (7) cover the HTTP flow on memory (idempotent sign-up, the deadline and reminder, retries with a stable
+  idempotency key, bad requests), a replay check (a finished run's history replays to the same result with no step
+  run, and a changed version faults with non-determinism), a restart on Postgres, and two app processes sharing runs
+  through Redis. `ci.sh` runs them with `npm run test:servers`.
+- The corpus part of the P3 "done when" row is met by the binding's check 2 (all 22 cases ported to TypeScript). The
+  example's own replay check is the user-level version of it.
+
+**Not done yet:** the chaos suite (step 4).
 
 ## Open questions
 
