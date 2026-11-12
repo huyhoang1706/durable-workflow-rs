@@ -83,21 +83,21 @@ export interface ConnectOptions {
 
 export interface WorkerOptions {
   /** Runs executing at once on this worker (default 16). */
-  concurrency?: number;
+  concurrency?: number | undefined;
   /** How long a claimed run stays leased without renewal (default 30 s). */
-  leaseMs?: number;
+  leaseMs?: number | undefined;
   /** How often to poll the queue when no nudge arrives (default 1 s). */
-  pollIntervalMs?: number;
-  reconcileIntervalMs?: number;
+  pollIntervalMs?: number | undefined;
+  reconcileIntervalMs?: number | undefined;
   /** Timers and retry backoffs up to this long are waited out in-process instead of suspending (default 5 s). */
-  inlineRetryThresholdMs?: number;
+  inlineRetryThresholdMs?: number | undefined;
   /** Fail a run after this many crashed executions (default 48). */
-  maxDeliveries?: number;
-  maxPayloadBytes?: number;
+  maxDeliveries?: number | undefined;
+  maxPayloadBytes?: number | undefined;
   /** How long `shutdown()` waits for in-flight runs (default 30 s). */
-  drainTimeoutMs?: number;
+  drainTimeoutMs?: number | undefined;
   /** Shown as the executing worker in the ops API (default: random). */
-  workerId?: string;
+  workerId?: string | undefined;
 }
 
 function toJson(v: unknown): Json {

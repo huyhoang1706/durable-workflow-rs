@@ -709,7 +709,7 @@ Three checks, in the order the slices build them:
 |---|---|---|
 | S1 ✅ | Crate, native `Replayer`, the TypeScript ctx and `Execution` host loop, an offline replay driver, checks 1 and 2 | All 22 cases pass check 1; the ported cases pass check 2. |
 | S2 ✅ | `JsWorkflow` host over `ThreadsafeFunction`s, `Worker` + `Client` on the memory backend, `Worker.replay` | A TypeScript workflow runs steps, timers and signals on the real engine from Vitest. |
-| S3 | Backends by URL (`memory://`, `postgres://` + optional Redis) through `durable_workflow::connect`, hooks, events, `examples/typescript-onboarding`, chaos test | The P3 "done when" row. |
+| S3 ✅ | Backends by URL (`memory://`, `postgres://` + optional Redis) through `durable_workflow::connect`, hooks, events, `examples/typescript-onboarding`, chaos test | The P3 "done when" row. |
 | S4 | Prebuilt binaries, CI job, measure activation round trips and tiny-step throughput (open question 2) | Published, and the numbers are written down. |
 
 ## S1 as built
@@ -783,7 +783,7 @@ memory backend. Where the code differs from the design above:
 - **Not done yet:** backends by URL, `examples/typescript-onboarding`, the chaos suite (`worker.test.ts` has one
   crash/resume case through `Worker.abort()`), streams and step deps, and the throughput numbers (S4).
 
-## S3 as built (in progress)
+## S3 as built
 
 **Step 1: backends by URL.** `Backend.connect(url, options)` resolves to a backend once connected and migrated:
 
@@ -823,7 +823,30 @@ a user would. One process serves an HTTP API on `node:http` and runs an embedded
 - The corpus part of the P3 "done when" row is met by the binding's check 2 (all 22 cases ported to TypeScript). The
   example's own replay check is the user-level version of it.
 
-**Not done yet:** the chaos suite (step 4).
+**Step 4: chaos.** Two suites, both on real Postgres + Redis, with the workers in separate Node processes that the
+test kills. Rust's chaos suite kills workers inside one process (`WorkerHandle::abort`). Here a SIGKILL also takes down
+the JavaScript side: pending promises, step bodies and the napi threads.
+
+- `bindings/typescript/test/chaos.test.ts` runs worker processes (`test/chaos/worker.ts`) over two workflows from
+  `test/chaos/workflows.ts`. `chaos.seq` runs three steps, a timer that suspends and a signal. `chaos.map` runs a
+  fan-out of three steps whose first attempts fail, then a timer and a signal.
+  - **SIGKILL:** 3 processes and 60 runs. The test kills a process every 300 ms (6 kills) and starts a new one in its
+    place. Every run must succeed with the right output and record each step exactly once. Its history must replay to
+    the same result with no fault. No step may run once its result is in history: each attempt checks this, as
+    Rust's `guarded` does. At least one attempt must have died with a killed process and run again elsewhere, so the
+    kills are known to hit work in flight.
+  - **SIGTERM:** `shutdown()` drains, the process exits 0, and every step ran exactly once.
+  - A mutation check (`drainTimeoutMs: 0`) makes the SIGTERM case fail as it should. The first version killed after
+    all step work had finished, so the SIGKILL case now sizes the work (150 ms steps on 4 slots per process) to outlast
+    the kills.
+- `examples/typescript-onboarding/test/crash.test.ts` runs the real app (`node src/main.ts`). It SIGKILLs the app while
+  it sends the welcome mail, starts the app again, and checks three things. The run finishes. The account step, done
+  before the crash, did not run again. The mail went out once, with the step's idempotency key. For this, `main.ts`
+  reads `PORT=0`, `DURABLE_NAMESPACE`, `DURABLE_SCHEMA`, `DURABLE_LEASE_MS` and `DEMO_MAIL_DELAY_MS`.
+- `WorkerOptions` fields now accept `undefined`, like `ConnectOptions`, so options can come straight from the
+  environment under `exactOptionalPropertyTypes`.
+
+S3 meets the P3 "done when" row. P3 is not done until S4 measures the throughput of many tiny steps (open question 2).
 
 ## Open questions
 

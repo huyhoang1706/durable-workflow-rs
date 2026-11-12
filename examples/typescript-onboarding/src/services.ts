@@ -5,8 +5,14 @@ import { randomUUID } from "node:crypto";
 
 import type { Services } from "./onboarding.ts";
 
-/** Accounts in memory, idempotent on the step's key; mails printed to stdout. */
-export function demoServices(log: (line: string) => void = console.log): Services {
+export interface DemoOptions {
+  /** Each mail takes this long to send (default 0). */
+  mailDelayMs?: number | undefined;
+  log?: (line: string) => void;
+}
+
+/** Accounts in memory, idempotent on the step's key; mails printed to stdout once sent. */
+export function demoServices({ mailDelayMs = 0, log = console.log }: DemoOptions = {}): Services {
   const accounts = new Map<string, string>();
   return {
     accounts: {
@@ -22,6 +28,7 @@ export function demoServices(log: (line: string) => void = console.log): Service
     },
     mailer: {
       async send(to, subject, idempotencyKey) {
+        if (mailDelayMs > 0) await new Promise((r) => setTimeout(r, mailDelayMs));
         log(`mail to=${to} subject=${JSON.stringify(subject)} idempotency_key=${idempotencyKey}`);
       },
     },

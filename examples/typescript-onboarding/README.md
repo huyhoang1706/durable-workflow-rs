@@ -63,7 +63,9 @@ stopped. Several processes on the same database and Redis share the runs between
 throwaway containers (Docker must be running):
 
 - a run waiting for verification survives a restart;
-- two app processes share the work.
+- two app processes share the work;
+- the real app (`node src/main.ts`), killed with SIGKILL while it sends the welcome mail, is started again and finishes
+  the run, and the account step is not run a second time.
 
 The tests also replay a finished run's history through the workflow. The replay must give the same result without
 running any step. A changed version of the workflow must be caught as non-determinism.
