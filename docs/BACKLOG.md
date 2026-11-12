@@ -39,3 +39,17 @@ These come from iter1.
 - Blob offload for large payloads (a `BlobStore` plugin, for example S3).
 - Retention cleanup for finished runs and their events.
 - Dashboard UI.
+
+## Test suite
+
+These come from [iter3](plans/iter3-sansio-core.md), seen while running `ci.sh` for P3 S3.
+
+- **Flaky chaos test under full-suite load.** `streaming_steps_finish_with_correct_output_despite_worker_kills`
+  (`crates/durable-workflow/tests/chaos.rs`) failed once in a full `./ci.sh` with "run 20: stream closed at the end":
+  the run succeeded with the right output, but its `tokens` stream was not marked closed. It passed 6 out of 6 times
+  when rerun alone or with the rest of the chaos file. Likely a race between a killed worker's attempt and the
+  `Closed` marker when the machine is busy; find out whether the stream can stay open for good, or whether the test
+  checks too early.
+- **Testcontainers left running.** After a full `./ci.sh`, about 28 `postgres:17` / `redis:7` containers labelled
+  `org.testcontainers.managed-by=testcontainers` keep running. The shared containers held in statics are probably
+  never dropped. Stop them when the test binary exits (or enable Ryuk), so repeated local runs do not pile them up.
