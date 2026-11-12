@@ -1011,6 +1011,7 @@ dependencies = [
  "durable-runtime",
  "durable-sm",
  "durable-spi",
+ "durable-workflow",
  "napi",
  "napi-build",
  "napi-derive",

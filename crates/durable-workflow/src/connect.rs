@@ -24,6 +24,9 @@ pub struct BackendConfig {
     pub migrate: bool,
     /// How long user streams are kept after their last chunk (default 24 h).
     pub stream_ttl: Option<Duration>,
+    /// How long to wait for a Postgres connection, at boot and later from the
+    /// pool (default 30 s).
+    pub connect_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for BackendConfig {
@@ -35,6 +38,7 @@ impl std::fmt::Debug for BackendConfig {
             .field("schema", &self.schema)
             .field("migrate", &self.migrate)
             .field("stream_ttl", &self.stream_ttl)
+            .field("connect_timeout", &self.connect_timeout)
             .finish()
     }
 }
@@ -48,6 +52,7 @@ impl BackendConfig {
             schema: "durable".into(),
             migrate: true,
             stream_ttl: None,
+            connect_timeout: None,
         }
     }
 
@@ -81,9 +86,13 @@ impl BackendConfig {
     }
 
     pub async fn build(&self) -> Result<Backend, Error> {
-        let store = durable_postgres::PostgresStore::connect(&self.database_url)
-            .await?
-            .schema(&self.schema);
+        let store = match self.connect_timeout {
+            Some(t) => {
+                durable_postgres::PostgresStore::connect_with_timeout(&self.database_url, t).await?
+            }
+            None => durable_postgres::PostgresStore::connect(&self.database_url).await?,
+        }
+        .schema(&self.schema);
         if self.migrate {
             store.migrate().await?;
         }

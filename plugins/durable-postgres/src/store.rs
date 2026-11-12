@@ -36,6 +36,18 @@ impl PostgresStore {
         Ok(Self::from_pool(PgPool::connect(url).await.map_err(be)?))
     }
 
+    /// As [`connect`](Self::connect), but give up on the first connection
+    /// (and later waits for a pooled one) after `timeout` instead of the
+    /// pool's default 30 s.
+    pub async fn connect_with_timeout(url: &str, timeout: std::time::Duration) -> Result<Self> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(timeout)
+            .connect(url)
+            .await
+            .map_err(be)?;
+        Ok(Self::from_pool(pool))
+    }
+
     /// # Panics
     /// If `name` is not a plain identifier (it is interpolated into SQL).
     pub fn schema(mut self, name: &str) -> Self {

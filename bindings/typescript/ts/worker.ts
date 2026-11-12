@@ -33,9 +33,52 @@ export class Backend {
     return new Backend(native.Backend.memory());
   }
 
+  /**
+   * A backend from a URL:
+   *
+   * - `memory://`: as {@link Backend.memory}. Only `namespace` applies.
+   * - `postgres://user:pass@host/db` (or `postgresql://`): runs, history and
+   *   timers in Postgres. With `redisUrl`, the queue, pub/sub, cache, rate
+   *   limiter and streams live in Redis; without it they stay in this
+   *   process, which is fine for a single worker process: Postgres stays the
+   *   source of truth and the queue is rebuilt from it on boot.
+   *
+   * Resolves once connected (and, by default, once the schema is migrated).
+   *
+   * ```ts
+   * const backend = await Backend.connect(process.env.DATABASE_URL!, { redisUrl: process.env.REDIS_URL });
+   * ```
+   */
+  static async connect(url: string, options: ConnectOptions = {}): Promise<Backend> {
+    const n = await native.Backend.connect(url, {
+      redis_url: options.redisUrl,
+      namespace: options.namespace,
+      schema: options.schema,
+      migrate: options.migrate,
+      stream_ttl_ms: options.streamTtlMs,
+      connect_timeout_ms: options.connectTimeoutMs,
+    });
+    return new Backend(n);
+  }
+
   get namespace(): string {
     return this.native.namespace;
   }
+}
+
+export interface ConnectOptions {
+  /** `redis://` or `rediss://`: queue, pub/sub, cache, rate limiter and streams in Redis. Postgres only. */
+  redisUrl?: string | undefined;
+  /** Runs, workflows and queues are separated by namespace (default `"default"`). */
+  namespace?: string | undefined;
+  /** Postgres schema holding the durable tables (default `"durable"`). */
+  schema?: string | undefined;
+  /** Create or upgrade the tables while connecting (default `true`; safe from every process at boot). */
+  migrate?: boolean | undefined;
+  /** How long user streams are kept after their last chunk (default 24 h). Postgres only. */
+  streamTtlMs?: number | undefined;
+  /** How long to wait for a Postgres connection, while connecting and later from the pool (default 30 s). */
+  connectTimeoutMs?: number | undefined;
 }
 
 export interface WorkerOptions {

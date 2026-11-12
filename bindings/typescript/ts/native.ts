@@ -73,6 +73,15 @@ export type WireErrorClass = { type: "retryable" } | { type: "fatal" } | { type:
 
 export type WireStepOutcome = { ok: Json } | { err: { message: string; class: WireErrorClass } };
 
+export interface WireConnectOptions {
+  redis_url?: string | undefined;
+  namespace?: string | undefined;
+  schema?: string | undefined;
+  migrate?: boolean | undefined;
+  stream_ttl_ms?: number | undefined;
+  connect_timeout_ms?: number | undefined;
+}
+
 export interface WireWorkflow {
   name: string;
   timeout_ms?: number | undefined;
@@ -122,7 +131,10 @@ export interface NativeClient {
 interface NativeModule {
   Replayer: new (runId: string, history: Event[]) => NativeReplayer;
   defaultRetryPolicy(): WireRetryPolicy;
-  Backend: { memory(): NativeBackend };
+  Backend: {
+    memory(): NativeBackend;
+    connect(url: string, options: WireConnectOptions | null): Promise<NativeBackend>;
+  };
   Worker: new (
     backend: NativeBackend,
     workflows: WireWorkflow[],

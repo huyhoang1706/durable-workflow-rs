@@ -783,6 +783,25 @@ memory backend. Where the code differs from the design above:
 - **Not done yet:** backends by URL, `examples/typescript-onboarding`, the chaos suite (`worker.test.ts` has one
   crash/resume case through `Worker.abort()`), streams and step deps, and the throughput numbers (S4).
 
+## S3 as built (in progress)
+
+**Step 1: backends by URL.** `Backend.connect(url, options)` resolves to a backend once connected and migrated:
+
+- `memory://` is `Backend.memory()`; only `namespace` applies, and Postgres options are refused.
+- `postgres://` (or `postgresql://`) goes through `durable_workflow::connect::BackendConfig`, so the binding builds
+  exactly what the CLI and `standalone` build. Options: `redisUrl`, `namespace`, `schema`, `migrate`, `streamTtlMs`,
+  `connectTimeoutMs`. Without `redisUrl` the queue, pub/sub, cache and streams stay in the process, and a new backend's
+  reconciler rebuilds the queue from Postgres.
+- Options are checked before connecting. The schema name is checked in the binding, because `PostgresStore::schema`
+  panics on a bad name. Errors name only the URL's scheme, never the rest, which may hold a password.
+- `connectTimeoutMs` is new on the Rust side too: `BackendConfig::connect_timeout` and
+  `PostgresStore::connect_with_timeout`. Without it, sqlx waits its 30 s acquire timeout on an unreachable host.
+- `test/backend.test.ts` covers the URL forms, the option checks, and the Postgres and Postgres + Redis cases: a round
+  trip with steps, a timer and a signal, a run finished by a new backend after a restart, namespace isolation, and a
+  client on a second connection reaching the worker through Redis. The server cases run only when
+  `DURABLE_TEST_DATABASE_URL` (and `DURABLE_TEST_REDIS_URL`) are set; `ci.sh` does not set them yet.
+- **Not done yet:** `examples/typescript-onboarding`, the chaos suite, and running the server cases in CI.
+
 ## Open questions
 
 1. **Mixed-language workers**: can one worker host Rust and TS workflows at once? Nothing prevents it,
