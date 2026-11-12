@@ -26,6 +26,7 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:servers": "scripts/with-servers.sh vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {

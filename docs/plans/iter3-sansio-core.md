@@ -799,8 +799,15 @@ memory backend. Where the code differs from the design above:
 - `test/backend.test.ts` covers the URL forms, the option checks, and the Postgres and Postgres + Redis cases: a round
   trip with steps, a timer and a signal, a run finished by a new backend after a restart, namespace isolation, and a
   client on a second connection reaching the worker through Redis. The server cases run only when
-  `DURABLE_TEST_DATABASE_URL` (and `DURABLE_TEST_REDIS_URL`) are set; `ci.sh` does not set them yet.
-- **Not done yet:** `examples/typescript-onboarding`, the chaos suite, and running the server cases in CI.
+  `DURABLE_TEST_DATABASE_URL` (and `DURABLE_TEST_REDIS_URL`) are set.
+
+**Step 2: the server cases in CI.** `scripts/with-servers.sh <command>` starts throwaway `postgres:17` and `redis:7`
+containers on random host ports, exports the two URLs, runs the command and removes the containers. It retries
+`docker run` because registries rate limit, and it starts nothing when `DURABLE_TEST_DATABASE_URL` is already set.
+`npm run test:servers` is `vitest run` through it, and `ci.sh` runs that instead of `npm test`, so nothing is skipped
+in CI. Plain `npm test` still skips the server cases, so it needs no Docker.
+
+**Not done yet:** `examples/typescript-onboarding` and the chaos suite.
 
 ## Open questions
 

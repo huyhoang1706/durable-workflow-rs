@@ -21,10 +21,12 @@ if cargo tree -p durable-sm -e normal | grep -qE ' (tokio|futures|async-trait)[a
     exit 1
 fi
 
-# The TypeScript binding: the native addon, type checks and the corpus checks
-# through the FFI (Vitest), and the tsdown bundle. Needs Node >= 22.18.
+# The TypeScript binding: the native addon, type checks, the corpus checks
+# through the FFI and the end-to-end tests (Vitest), and the tsdown bundle.
+# Needs Node >= 22.18. `test:servers` runs the Postgres/Redis cases too, on
+# containers it starts (or on DURABLE_TEST_DATABASE_URL / _REDIS_URL if set).
 if command -v node >/dev/null; then
-    (cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test && npm run build)
+    (cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm run test:servers && npm run build)
 else
     echo "warning: node not found; skipping the TypeScript binding" >&2
 fi
