@@ -1,4 +1,4 @@
-// The host loop's step side: what the engine will call in S2.
+// The host loop's step side, as the engine calls it through `Worker`.
 
 import { expect, test } from "vitest";
 

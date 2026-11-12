@@ -1,7 +1,7 @@
 # Iteration 3: a sans-IO core for TS/JS and Python SDKs
 
-> Status: P0–P2 and P3a are done. P3 (the TypeScript binding, `bindings/typescript`) is designed below and its first
-> slice (S1) is built. The design sections below are the original sketch. The
+> Status: P0–P2 and P3a are done. P3 (the TypeScript binding, `bindings/typescript`) is designed below; slices S1
+> and S2 are built, S3 is next. The design sections below are the original sketch. The
 > "as built" sections record where the code differs. `durable-core` was renamed `durable-spi` after P1 (#9); the
 > as-built notes keep the name used at the time.
 
@@ -707,8 +707,8 @@ Three checks, in the order the slices build them:
 
 | Slice | Work | Done when |
 |---|---|---|
-| S1 | Crate, native `Replayer`, the TypeScript ctx and `Execution` host loop, an offline replay driver, checks 1 and 2 | All 22 cases pass check 1; the ported cases pass check 2. |
-| S2 | `JsWorkflow` host over `ThreadsafeFunction`s, `Worker` + `Client` on the memory backend, `Worker.replay` | A TypeScript workflow runs steps, timers and signals on the real engine from Vitest. |
+| S1 ✅ | Crate, native `Replayer`, the TypeScript ctx and `Execution` host loop, an offline replay driver, checks 1 and 2 | All 22 cases pass check 1; the ported cases pass check 2. |
+| S2 ✅ | `JsWorkflow` host over `ThreadsafeFunction`s, `Worker` + `Client` on the memory backend, `Worker.replay` | A TypeScript workflow runs steps, timers and signals on the real engine from Vitest. |
 | S3 | Backends by URL (`memory://`, `postgres://` + optional Redis) through `durable_workflow::connect`, hooks, events, `examples/typescript-onboarding`, chaos test | The P3 "done when" row. |
 | S4 | Prebuilt binaries, CI job, measure activation round trips and tiny-step throughput (open question 2) | Published, and the numbers are written down. |
 
@@ -744,6 +744,44 @@ cases, check 2 on TypeScript ports of all 22 (not only a subset), and unit tests
 - **Not done yet:** `runStep` and `abortStep` exist and are tested, but nothing calls them until the S2 host bridge.
   `WorkflowOptions` holds only `timeoutMs`. A `Promise.all` that rejects early leaves its other calls pending, where
   Rust's `try_join!` would drop (release) them; no corpus case covers it yet.
+
+## S2 as built
+
+The crate is now three modules: `replayer.rs` (the S1 class), `host.rs` (`JsHost`, `JsWorkflow`, `JsExecution`,
+`StepHandle`) and `worker.rs` (`Backend`, `Worker`, `Client`). On the TypeScript side, `ts/worker.ts` holds `Backend`,
+`Worker`, `Client` and `RunHandle`. `npm test` runs 72 tests; `test/worker.test.ts` runs 13 workflows end to end on the
+memory backend. Where the code differs from the design above:
+
+- **One host per worker, and execution ids.** The design sketched one execution object per run, created through a
+  threadsafe function. Instead, each worker has one `Host` table in TypeScript and five threadsafe functions:
+  `start(id, workflow, runId, input, replayer)`, `activate(id, resolved)`, `runStep(id, key, attempt, step)`,
+  `abortStep(id, key, attempt)` and `dispose(id)`. The engine numbers executions; `start` runs on the first
+  activation, so `HostWorkflow::start` runs no JavaScript, as the trait requires. `start` is awaited before
+  `activate`, because calls through different threadsafe functions are not ordered with each other.
+- **The threadsafe functions are weak.** They do not keep Node alive. `Worker.start()` holds a timer that keeps the
+  event loop alive until `shutdown()` or `abort()`, as a server does. A worker that was never started, or a `replay`,
+  cannot keep a process (or a Vitest fork) from exiting.
+- **Disposal waits for step attempts.** `dispose` marks the execution, which stays in the table until its last
+  `runStep` settles, so the engine can still abort attempts that outlive it (a rebuild keeps running steps). A
+  `JsExecution` dropped without `interrupt` (the engine task was aborted, as in `Worker.abort()`) disposes from `Drop`.
+  `interrupt` also interrupts the replayer, so a body still running after it sees `InterruptedError` from its next ctx
+  call.
+- **AbortSignal on timeout.** The engine flags a timed-out attempt but does not drop its future. The attempt future
+  polls the flag every 50 ms and calls `abortStep` once it is set. A dropped attempt calls `abortStep` from a guard.
+- **Errors at the boundary.** An activation that throws or cannot reach JavaScript faults the run (`typescript host:
+  activation failed: ...`), so it is retried later. A `runStep` that cannot reach JavaScript is a retryable step
+  failure; an outcome that does not parse is fatal. Step failure classes cross in the wire shape of `ErrorClass`
+  (`{"type": "retry_after", "after_ms"}`); `StepError.retryAfter(ms)` keeps its TypeScript shape.
+- **`Worker.replay` replaces the offline loop.** `replay()` (and check 2 of the conformance) now builds a worker on a
+  memory backend and calls `durable_runtime::Worker::replay`, so the TypeScript ports go through `host::replay`, the
+  same loop as `rebuild` and `replay_corpus`. All 22 cases still pass.
+- **The worker runs on napi's tokio runtime** (the `async` feature). `Worker` takes the `WorkerBuilder` settings in
+  milliseconds; a workflow's `timeoutMs` is rounded up to whole seconds, because deadlines are stored in seconds.
+- **`Client`**: `start` (with `idempotencyKey`; a rate limit rejects with `RateLimitedError`), `handle`, `getRun`,
+  `events`, `signal`, `sendEvent`, `resumeHook` and `cancel`. `RunHandle.result()` rejects with `RunFailedError`,
+  `RunCancelledError` or `RunNotFoundError`. Events and hooks already work end to end; S3 adds the other backends.
+- **Not done yet:** backends by URL, `examples/typescript-onboarding`, the chaos suite (`worker.test.ts` has one
+  crash/resume case through `Worker.abort()`), streams and step deps, and the throughput numbers (S4).
 
 ## Open questions
 

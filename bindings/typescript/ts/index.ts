@@ -31,11 +31,17 @@ export {
   HookConflictError,
   InterruptedError,
   NonDeterminismError,
+  RateLimitedError,
+  RunCancelledError,
+  RunError,
+  RunFailedError,
+  RunNotFoundError,
   StepError,
   StepFailedError,
   WorkflowError,
   type ErrorClass,
 } from "./errors.ts";
 export { replay, type ReplayOutcome } from "./replay.ts";
+export { Backend, Client, RunHandle, Worker, type StartOptions, type WorkerOptions } from "./worker.ts";
 export type { StandardSchemaV1 } from "./schema.ts";
 export type * from "./wire.ts";
