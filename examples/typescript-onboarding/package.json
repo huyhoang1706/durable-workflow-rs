@@ -1,0 +1,25 @@
+{
+  "name": "typescript-onboarding",
+  "version": "0.0.0",
+  "private": true,
+  "description": "User onboarding on durable-workflow, in TypeScript: an HTTP API and an embedded worker.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:servers": "../../bindings/typescript/scripts/with-servers.sh vitest run"
+  },
+  "dependencies": {
+    "@durable/typescript": "file:../../bindings/typescript",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

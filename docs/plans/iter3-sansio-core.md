@@ -567,7 +567,8 @@ bindings/typescript/
   vitest.config.ts                   unit tests
   ts/                                the SDK: workflow(), ctx, the host loop, the native loader
   test/                              Vitest suites
-  scripts/build-native.mjs           cargo build + copy the addon to durable.node
+  npm/<platform>/                    per-platform npm packages for the prebuilt addon (S4)
+  bench/                             tiny-step throughput (S4)
 ```
 
 The workspace builds the crate like any other (`cargo clippy --workspace` covers it). Its lib target sets
@@ -709,8 +710,8 @@ Three checks, in the order the slices build them:
 |---|---|---|
 | S1 ✅ | Crate, native `Replayer`, the TypeScript ctx and `Execution` host loop, an offline replay driver, checks 1 and 2 | All 22 cases pass check 1; the ported cases pass check 2. |
 | S2 ✅ | `JsWorkflow` host over `ThreadsafeFunction`s, `Worker` + `Client` on the memory backend, `Worker.replay` | A TypeScript workflow runs steps, timers and signals on the real engine from Vitest. |
-| S3 | Backends by URL (`memory://`, `postgres://` + optional Redis) through `durable_workflow::connect`, hooks, events, `examples/typescript-onboarding`, chaos test | The P3 "done when" row. |
-| S4 | Prebuilt binaries, CI job, measure activation round trips and tiny-step throughput (open question 2) | Published, and the numbers are written down. |
+| S3 ✅ | Backends by URL (`memory://`, `postgres://` + optional Redis) through `durable_workflow::connect`, hooks, events, `examples/typescript-onboarding`, chaos test | The P3 "done when" row. |
+| S4 (built; not published) | Prebuilt binaries, CI job, measure activation round trips and tiny-step throughput (open question 2) | Published, and the numbers are written down. |
 
 ## S1 as built
 
@@ -783,9 +784,135 @@ memory backend. Where the code differs from the design above:
 - **Not done yet:** backends by URL, `examples/typescript-onboarding`, the chaos suite (`worker.test.ts` has one
   crash/resume case through `Worker.abort()`), streams and step deps, and the throughput numbers (S4).
 
+## S3 as built
+
+**Step 1: backends by URL.** `Backend.connect(url, options)` resolves to a backend once connected and migrated:
+
+- `memory://` is `Backend.memory()`; only `namespace` applies, and Postgres options are refused.
+- `postgres://` (or `postgresql://`) goes through `durable_workflow::connect::BackendConfig`, so the binding builds
+  exactly what the CLI and `standalone` build. Options: `redisUrl`, `namespace`, `schema`, `migrate`, `streamTtlMs`,
+  `connectTimeoutMs`. Without `redisUrl` the queue, pub/sub, cache and streams stay in the process, and a new backend's
+  reconciler rebuilds the queue from Postgres.
+- Options are checked before connecting. The schema name is checked in the binding, because `PostgresStore::schema`
+  panics on a bad name. Errors name only the URL's scheme, never the rest, which may hold a password.
+- `connectTimeoutMs` is new on the Rust side too: `BackendConfig::connect_timeout` and
+  `PostgresStore::connect_with_timeout`. Without it, sqlx waits its 30 s acquire timeout on an unreachable host.
+- `test/backend.test.ts` covers the URL forms, the option checks, and the Postgres and Postgres + Redis cases: a round
+  trip with steps, a timer and a signal, a run finished by a new backend after a restart, namespace isolation, and a
+  client on a second connection reaching the worker through Redis. The server cases run only when
+  `DURABLE_TEST_DATABASE_URL` (and `DURABLE_TEST_REDIS_URL`) are set.
+
+**Step 2: the server cases in CI.** `scripts/with-servers.sh <command>` starts throwaway `postgres:17` and `redis:7`
+containers on random host ports, exports the two URLs, runs the command and removes the containers. It retries
+`docker run` because registries rate limit, and it starts nothing when `DURABLE_TEST_DATABASE_URL` is already set.
+`npm run test:servers` is `vitest run` through it, and `ci.sh` runs that instead of `npm test`, so nothing is skipped
+in CI. Plain `npm test` still skips the server cases, so it needs no Docker.
+
+**Step 3: `examples/typescript-onboarding`.** It is an npm project, not a crate, so it is excluded from the Cargo
+workspace. It depends on the SDK through `file:../../bindings/typescript` and imports the built package (`dist/`), as
+a user would. One process serves an HTTP API on `node:http` and runs an embedded worker; the backend comes from
+`DATABASE_URL` (default `memory://`) and `REDIS_URL`.
+
+- The workflow mirrors the Rust `user.onboarding` from `embedded-axum`: create the account, send a welcome mail (retry
+  and timeout), wait up to a day for `verified`, and send a reminder if it does not come. Services are passed into a
+  factory (`onboarding(services)`), which is how a TypeScript workflow gets the dependencies a Rust one gets through
+  `Dep`.
+- The tests (7) cover the HTTP flow on memory (idempotent sign-up, the deadline and reminder, retries with a stable
+  idempotency key, bad requests), a replay check (a finished run's history replays to the same result with no step
+  run, and a changed version faults with non-determinism), a restart on Postgres, and two app processes sharing runs
+  through Redis. `ci.sh` runs them with `npm run test:servers`.
+- The corpus part of the P3 "done when" row is met by the binding's check 2 (all 22 cases ported to TypeScript). The
+  example's own replay check is the user-level version of it.
+
+**Step 4: chaos.** Two suites, both on real Postgres + Redis, with the workers in separate Node processes that the
+test kills. Rust's chaos suite kills workers inside one process (`WorkerHandle::abort`). Here a SIGKILL also takes down
+the JavaScript side: pending promises, step bodies and the napi threads.
+
+- `bindings/typescript/test/chaos.test.ts` runs worker processes (`test/chaos/worker.ts`) over two workflows from
+  `test/chaos/workflows.ts`. `chaos.seq` runs three steps, a timer that suspends and a signal. `chaos.map` runs a
+  fan-out of three steps whose first attempts fail, then a timer and a signal.
+  - **SIGKILL:** 3 processes and 60 runs. The test kills a process every 300 ms (6 kills) and starts a new one in its
+    place. Every run must succeed with the right output and record each step exactly once. Its history must replay to
+    the same result with no fault. No step may run once its result is in history: each attempt checks this, as
+    Rust's `guarded` does. At least one attempt must have died with a killed process and run again elsewhere, so the
+    kills are known to hit work in flight.
+  - **SIGTERM:** `shutdown()` drains, the process exits 0, and every step ran exactly once.
+  - A mutation check (`drainTimeoutMs: 0`) makes the SIGTERM case fail as it should. The first version killed after
+    all step work had finished, so the SIGKILL case now sizes the work (150 ms steps on 4 slots per process) to outlast
+    the kills.
+- `examples/typescript-onboarding/test/crash.test.ts` runs the real app (`node src/main.ts`). It SIGKILLs the app while
+  it sends the welcome mail, starts the app again, and checks three things. The run finishes. The account step, done
+  before the crash, did not run again. The mail went out once, with the step's idempotency key. For this, `main.ts`
+  reads `PORT=0`, `DURABLE_NAMESPACE`, `DURABLE_SCHEMA`, `DURABLE_LEASE_MS` and `DEMO_MAIL_DELAY_MS`.
+- `WorkerOptions` fields now accept `undefined`, like `ConnectOptions`, so options can come straight from the
+  environment under `exactOptionalPropertyTypes`.
+
+S3 meets the P3 "done when" row. P3 is not done until S4 measures the throughput of many tiny steps (open question 2).
+
+## S4 as built
+
+**Prebuilt addons.** `@napi-rs/cli` builds the addon (`npm run build:native`, or `build:native:release`) as
+`durable.<platform>.node`, and `package.json` `napi.targets` lists five targets: `linux-x64-gnu`, `linux-arm64-gnu`,
+`darwin-x64`, `darwin-arm64` and `win32-x64-msvc`. `npm/<platform>/` holds the per-platform packages
+(`@durable/typescript-<platform>`, generated by `napi create-npm-dirs`). The main package ships only `dist/`, and
+`napi pre-publish` adds the platform packages to its `optionalDependencies` at release time, so npm installs only the
+one that matches. `scripts/build-native.mjs` is gone. The loader in `ts/native.ts` tries three places in order:
+`DURABLE_NATIVE`, then a local `durable.<platform>.node` (a checkout, or the example's `file:` dependency), then the
+platform package. If none is there, the error names the platform and how to build an addon.
+
+**CI.** `.github/workflows/ci.yml` runs `./ci.sh` on Ubuntu. `.github/workflows/typescript-release.yml` runs in three
+jobs:
+
+1. **build:** builds each target on its own runner. Linux uses Ubuntu 22.04, so the addon needs only glibc 2.35;
+   darwin-x64 is cross-built on Apple silicon. Each runner that can load its addon runs the memory-backend tests.
+2. **package:** collects the addons (`napi artifacts` fails if a target is missing), packs every package, and
+   smoke-tests them from a clean project (`scripts/smoke-test.mjs`).
+3. **publish:** runs only for a `typescript-v<version>` tag that matches `package.json`. It publishes the platform
+   packages, then the main package, with provenance, using `NPM_TOKEN` from the `npm` environment.
+
+`actionlint` is clean. Locally, the linux-x64 half of the pipeline ran end to end: `napi artifacts`, `pre-publish`
+(without publishing), `npm pack` and the smoke test from the tarballs. The workflows themselves have not run on GitHub
+yet, and nothing is published: the npm scope, the token and the first tag are the owner's call.
+
+**Measurements** (open question 2). `npm run bench` (`bench/tiny-steps.ts`) and
+`cargo run --release -p durable-workflow --example tiny_steps` run the same three workloads of steps that return at
+once. Release builds, 4 vCPUs, Node 22.23. `Worker.stats` (internal) counts the engine's calls into JavaScript.
+
+| Memory backend | Rust | TypeScript | TS calls per step | TS main thread busy |
+|---|---|---|---|---|
+| 1 run × 2000 sequential steps | 48 µs/step | 278 µs/step | 1 activation + 1 step call | 52% |
+| 500 runs × 20 steps, 64 at once | 10 µs/step (97k steps/s) | 93 µs/step (10.7k steps/s) | 1.05 + 1 | 99% |
+| 1 run, 2000 parallel steps | 668 µs/step | 1187 µs/step | 1 + 1 | 11% |
+
+| Postgres + Redis, TypeScript | µs/step | main thread busy |
+|---|---|---|
+| 1 run × 500 sequential steps | 2510 | 11% |
+| 500 runs × 20 steps, 64 at once | 571 (1.75k steps/s) | 50% |
+| 1 run, 500 parallel steps | 2703 | 6% |
+
+What this says:
+
+- **Two round trips per step.** Each step costs one `runStep` call and one `activate` call through threadsafe
+  functions. A sequential step costs about 230 µs more in TypeScript than in Rust, and half of that time the main
+  thread is idle, waiting for a handoff.
+- **One process tops out near 10k tiny steps/s.** Under load the main thread is saturated (99%) at about a tenth of
+  Rust's throughput. To go higher, run more processes; batching resolutions per activation does not help, since
+  there is already about one activation per step.
+- **With a real store, the FFI is not the bottleneck.** On Postgres the main thread is at most half busy and a
+  sequential step takes about 2.5 ms, mostly the commit round trip. The answer to open question 2 is that the
+  throughput is acceptable for steps that do I/O. For CPU-light, very fine-grained steps, Rust is about 9× faster per
+  process.
+- **The fan-out cost is the engine's, not the binding's.** Per-step cost grows with the number of steps in flight,
+  in Rust too (117 µs/step at 250, 1686 µs/step at 4000): the run loop handles one `StepDone` per turn and walks the
+  whole frontier each turn. See the backlog.
+
+**Not done:** publishing (needs the owner), musl and other targets, and a README for the npm page.
+
 ## Open questions
 
 1. **Mixed-language workers**: can one worker host Rust and TS workflows at once? Nothing prevents it,
    because registration is by workflow name. Defer until someone asks.
 2. **Node threading**: tokio runs on its own threads and JS on the main thread. Step results cross
    via `ThreadsafeFunction`. Check that the throughput of many tiny steps is acceptable before P3 is called done.
+   **Answered in "S4 as built":** about 10k tiny steps/s per process on the memory backend (Rust: 97k). On Postgres
+   the store dominates, and the main thread is at most half busy.

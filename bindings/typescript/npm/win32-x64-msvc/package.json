@@ -1,0 +1,19 @@
+{
+  "name": "@durable/typescript-win32-x64-msvc",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "durable.win32-x64-msvc.node",
+  "files": [
+    "durable.win32-x64-msvc.node"
+  ],
+  "description": "Durable workflows in TypeScript, on the durable-workflow engine.",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "os": [
+    "win32"
+  ]
+}

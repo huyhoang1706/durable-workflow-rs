@@ -1,0 +1,19 @@
+{
+  "name": "@durable/typescript-darwin-arm64",
+  "version": "0.1.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "durable.darwin-arm64.node",
+  "files": [
+    "durable.darwin-arm64.node"
+  ],
+  "description": "Durable workflows in TypeScript, on the durable-workflow engine.",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "os": [
+    "darwin"
+  ]
+}

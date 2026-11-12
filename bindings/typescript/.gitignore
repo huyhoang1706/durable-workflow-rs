@@ -1,3 +1,5 @@
 node_modules/
-durable.node
+*.node
 dist/
+# napi-derive writes typings on every build; the hand-written ones are in ts/native.ts.
+/index.d.ts

@@ -39,3 +39,36 @@ These come from iter1.
 - Blob offload for large payloads (a `BlobStore` plugin, for example S3).
 - Retention cleanup for finished runs and their events.
 - Dashboard UI.
+
+## Engine
+
+- **Fan-out is quadratic in the number of steps in flight**, from [iter3](plans/iter3-sansio-core.md) (S4
+  measurements). One run with n parallel steps costs O(n²) in total: 117 µs per step at n = 250, 1686 µs at
+  n = 4000, in Rust and TypeScript alike. Each step completion is one turn of `run_loop` in
+  `crates/durable-runtime/src/engine.rs` (`Wake::Done` handles a single `StepDone`), and every turn recomputes the
+  frontier and walks it in `reap`, `decide` and `build_commit`. Drain every completion that is ready in one turn
+  (one commit for all of them), and keep the frontier incremental, or index it by key.
+
+## TypeScript binding
+
+From [iter3](plans/iter3-sansio-core.md), S4.
+
+- **First npm release.** Choose the npm scope (`@durable` is a placeholder until it is registered), add `NPM_TOKEN`
+  to a GitHub `npm` environment, run `.github/workflows/typescript-release.yml` once without a tag, then push
+  `typescript-v0.1.0`.
+- **More targets:** `linux-x64-musl` / `linux-arm64-musl` (Alpine), and `win32-arm64-msvc`.
+- **A README for the npm package.**
+
+## Test suite
+
+These come from [iter3](plans/iter3-sansio-core.md), seen while running `ci.sh` for P3 S3.
+
+- **Flaky chaos test under full-suite load.** `streaming_steps_finish_with_correct_output_despite_worker_kills`
+  (`crates/durable-workflow/tests/chaos.rs`) failed once in a full `./ci.sh` with "run 20: stream closed at the end":
+  the run succeeded with the right output, but its `tokens` stream was not marked closed. It passed 6 out of 6 times
+  when rerun alone or with the rest of the chaos file. Likely a race between a killed worker's attempt and the
+  `Closed` marker when the machine is busy; find out whether the stream can stay open for good, or whether the test
+  checks too early.
+- **Testcontainers left running.** After a full `./ci.sh`, about 28 `postgres:17` / `redis:7` containers labelled
+  `org.testcontainers.managed-by=testcontainers` keep running. The shared containers held in statics are probably
+  never dropped. Stop them when the test binary exits (or enable Ryuk), so repeated local runs do not pile them up.

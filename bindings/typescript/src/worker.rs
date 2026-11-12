@@ -4,6 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use durable_runtime::{RunError, StartOptions, StartOutcome, WorkerHandle, WorkflowOptions};
 use durable_spi::Backend as SpiBackend;
+use durable_workflow::connect::BackendConfig;
 use napi::{Error, Result};
 use napi_derive::napi;
 use parking_lot::Mutex;
@@ -36,9 +37,138 @@ impl JsBackend {
         }
     }
 
+    /// A backend from a URL: `memory://`, or `postgres://` (also
+    /// `postgresql://`) for the store with an optional `redis_url` for the
+    /// queue, pub/sub, cache, rate limiter and streams. `options` is
+    /// `{redis_url?, namespace?, schema?, migrate?, stream_ttl_ms?,
+    /// connect_timeout_ms?}`.
+    #[napi]
+    pub async fn connect(url: String, options: Value) -> Result<JsBackend> {
+        let options: ConnectOptions = if options.is_null() {
+            ConnectOptions::default()
+        } else {
+            from_json("backend options", options)?
+        };
+        let inner = match BackendUrl::parse(&url)? {
+            BackendUrl::Memory => options.memory()?,
+            BackendUrl::Postgres => options.config(url)?.build().await.map_err(backend_err)?,
+        };
+        Ok(Self { inner })
+    }
+
     #[napi(getter)]
     pub fn namespace(&self) -> String {
         self.inner.namespace.clone()
+    }
+}
+
+/// `Backend.connect` options.
+#[derive(Deserialize, Default, Debug)]
+#[serde(deny_unknown_fields)]
+struct ConnectOptions {
+    redis_url: Option<String>,
+    namespace: Option<String>,
+    schema: Option<String>,
+    migrate: Option<bool>,
+    stream_ttl_ms: Option<u64>,
+    connect_timeout_ms: Option<u64>,
+}
+
+enum BackendUrl {
+    Memory,
+    Postgres,
+}
+
+impl BackendUrl {
+    fn parse(url: &str) -> Result<Self> {
+        // Only the scheme goes into errors: the rest may hold a password.
+        let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
+        match scheme.as_deref() {
+            Some("memory") => Ok(Self::Memory),
+            Some("postgres" | "postgresql") => Ok(Self::Postgres),
+            Some(s) if !s.is_empty() && !s.contains(['/', '@']) => Err(Error::from_reason(
+                format!("unsupported backend URL scheme `{s}:`; use `memory://` or `postgres://`"),
+            )),
+            _ => Err(Error::from_reason(
+                "invalid backend URL: expected `memory://` or `postgres://...`",
+            )),
+        }
+    }
+}
+
+impl ConnectOptions {
+    fn namespace(&self) -> Result<Option<String>> {
+        match &self.namespace {
+            Some(ns) if ns.is_empty() => Err(Error::from_reason("namespace must not be empty")),
+            ns => Ok(ns.clone()),
+        }
+    }
+
+    fn memory(&self) -> Result<SpiBackend> {
+        let postgres_only = [
+            ("redisUrl", self.redis_url.is_some()),
+            ("schema", self.schema.is_some()),
+            ("migrate", self.migrate.is_some()),
+            ("streamTtlMs", self.stream_ttl_ms.is_some()),
+            ("connectTimeoutMs", self.connect_timeout_ms.is_some()),
+        ];
+        if let Some((name, _)) = postgres_only.iter().find(|(_, set)| *set) {
+            return Err(Error::from_reason(format!(
+                "`{name}` only applies to a `postgres://` backend"
+            )));
+        }
+        let mut backend = durable_memory::backend();
+        if let Some(ns) = self.namespace()? {
+            backend.namespace = ns;
+        }
+        Ok(backend)
+    }
+
+    fn config(&self, database_url: String) -> Result<BackendConfig> {
+        let mut c = BackendConfig::new(database_url);
+        if let Some(url) = &self.redis_url {
+            let scheme = url.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
+            if !matches!(
+                scheme.as_deref(),
+                Some("redis" | "rediss" | "redis+unix" | "unix")
+            ) {
+                return Err(Error::from_reason(
+                    "invalid redisUrl: expected `redis://...` or `rediss://...`",
+                ));
+            }
+            c.redis_url = Some(url.clone());
+        }
+        if let Some(ns) = self.namespace()? {
+            c.namespace = ns;
+        }
+        if let Some(schema) = &self.schema {
+            // `PostgresStore::schema` panics on a name it cannot interpolate.
+            let ok = !schema.is_empty()
+                && !schema.starts_with(|c: char| c.is_ascii_digit())
+                && schema
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !ok {
+                return Err(Error::from_reason(format!(
+                    "invalid schema name `{schema}`: use letters, digits and underscores, not starting with a digit"
+                )));
+            }
+            c.schema = schema.clone();
+        }
+        if let Some(m) = self.migrate {
+            c.migrate = m;
+        }
+        match self.stream_ttl_ms {
+            Some(0) => return Err(Error::from_reason("streamTtlMs must be positive")),
+            Some(ms) => c.stream_ttl = Some(Duration::from_millis(ms)),
+            None => {}
+        }
+        match self.connect_timeout_ms {
+            Some(0) => return Err(Error::from_reason("connectTimeoutMs must be positive")),
+            Some(ms) => c.connect_timeout = Some(Duration::from_millis(ms)),
+            None => {}
+        }
+        Ok(c)
     }
 }
 

@@ -1,6 +1,12 @@
-// Loads the Node-API addon (`durable.node`, built by `npm run build:native`).
-// Set DURABLE_NATIVE to load it from elsewhere.
+// Loads the Node-API addon. In order:
+//
+// 1. DURABLE_NATIVE, a path to a `.node` file;
+// 2. `durable.<platform>.node` next to `ts/` and `dist/`, which `npm run
+//    build:native` writes (a checkout of the repository);
+// 3. the prebuilt `@durable/typescript-<platform>` package, an optional
+//    dependency npm installs only on its platform.
 
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -73,6 +79,15 @@ export type WireErrorClass = { type: "retryable" } | { type: "fatal" } | { type:
 
 export type WireStepOutcome = { ok: Json } | { err: { message: string; class: WireErrorClass } };
 
+export interface WireConnectOptions {
+  redis_url?: string | undefined;
+  namespace?: string | undefined;
+  schema?: string | undefined;
+  migrate?: boolean | undefined;
+  stream_ttl_ms?: number | undefined;
+  connect_timeout_ms?: number | undefined;
+}
+
 export interface WireWorkflow {
   name: string;
   timeout_ms?: number | undefined;
@@ -122,7 +137,10 @@ export interface NativeClient {
 interface NativeModule {
   Replayer: new (runId: string, history: Event[]) => NativeReplayer;
   defaultRetryPolicy(): WireRetryPolicy;
-  Backend: { memory(): NativeBackend };
+  Backend: {
+    memory(): NativeBackend;
+    connect(url: string, options: WireConnectOptions | null): Promise<NativeBackend>;
+  };
   Worker: new (
     backend: NativeBackend,
     workflows: WireWorkflow[],
@@ -136,8 +154,45 @@ interface NativeModule {
   Client: new (backend: NativeBackend) => NativeClient;
 }
 
-const path = process.env.DURABLE_NATIVE ?? fileURLToPath(new URL("../durable.node", import.meta.url));
+/** The platform part of the addon's name, as `@napi-rs/cli` spells it: `linux-x64-gnu`, `darwin-arm64`, ... */
+export function platformTriple(): string {
+  const { platform, arch } = process;
+  switch (platform) {
+    case "linux": {
+      const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: string } } | undefined;
+      return `linux-${arch}-${report?.header?.glibcVersionRuntime ? "gnu" : "musl"}`;
+    }
+    case "win32":
+      return `win32-${arch}-msvc`;
+    default:
+      return `${platform}-${arch}`;
+  }
+}
 
-export const native: NativeModule = createRequire(import.meta.url)(path);
+function load(): NativeModule {
+  const require = createRequire(import.meta.url);
+  const explicit = process.env.DURABLE_NATIVE;
+  if (explicit) return require(explicit);
+
+  const triple = platformTriple();
+  const local = fileURLToPath(new URL(`../durable.${triple}.node`, import.meta.url));
+  if (existsSync(local)) return require(local);
+
+  const pkg = `@durable/typescript-${triple}`;
+  try {
+    return require(pkg);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") throw e;
+    throw new Error(
+      `@durable/typescript has no native addon for ${triple}: \`${pkg}\` is not installed. ` +
+        `Prebuilt addons exist for linux-x64-gnu, linux-arm64-gnu, darwin-x64, darwin-arm64 and win32-x64-msvc; ` +
+        `elsewhere, build one with \`npm run build:native\` in a checkout, or point DURABLE_NATIVE at it.`,
+      { cause: e },
+    );
+  }
+}
+
+export const native: NativeModule = load();
 
 export type { Json };
