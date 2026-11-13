@@ -1,0 +1,5 @@
+# One Rust version for Cargo (rustup reads this file) and Bazel (MODULE.bazel,
+# `toolchains.toolchain`). Bump both together.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

@@ -1,0 +1,22 @@
+load("@crates//durable-testkit:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("//bazel:rust.bzl", "CORPUS_DATA", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    crate_data = crate_data,
+    # `corpus::dir()` is `env!("CARGO_MANIFEST_DIR")/corpus`. Bazel compiles in a
+    # sandbox whose absolute path is gone by the time a test runs (and rules_rs
+    # refuses to embed it), so make it the package path: relative to a test's working
+    # directory, the runfiles root, that is where CORPUS_DATA puts the corpus.
+    rustc_env = {"CARGO_MANIFEST_DIR": package_name()},
+    test_data = {"corpus": CORPUS_DATA},
+)
+
+# The replay conformance corpus. Rewriting it (`DURABLE_UPDATE_CORPUS=1`) writes
+# into the source tree, so it stays a Cargo command.
+filegroup(
+    name = "corpus",
+    srcs = glob(["corpus/*.json"]),
+    visibility = ["//visibility:public"],
+)

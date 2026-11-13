@@ -1,0 +1,14 @@
+load("@crates//durable-postgres:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("//bazel:rust.bzl", "DOCKER_TEST_TAGS", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    compile_data = glob(["migrations/*.sql"]),
+    crate_data = crate_data,
+    test_tags = {
+        "batching": DOCKER_TEST_TAGS,
+        "conformance": DOCKER_TEST_TAGS,
+        "migrations": DOCKER_TEST_TAGS,
+    },
+)

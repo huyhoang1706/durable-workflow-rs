@@ -1,0 +1,61 @@
+# Bazel build of the Cargo workspace (docs/bazel.md). Cargo.toml and Cargo.lock stay
+# the source of truth: `crate.from_cargo` reads them, and every crate's BUILD.bazel
+# takes its dependencies from the generated `@crates//<package>:data.bzl`.
+module(name = "durable_workflow")
+
+bazel_dep(name = "rules_rs", version = "0.2.4")
+bazel_dep(name = "llvm", version = "0.8.26")
+bazel_dep(name = "platforms", version = "1.1.0")
+
+toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
+toolchains.toolchain(
+    edition = "2024",
+    version = "1.97.1",  # keep in step with rust-toolchain.toml
+)
+use_repo(toolchains, "default_rust_toolchains")
+
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
+
+register_toolchains(
+    "@default_rust_toolchains//...",
+    "@llvm//toolchain:all",
+)
+
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lock = "//:Cargo.lock",
+    cargo_toml = "//:Cargo.toml",
+    generate_lint_config = True,
+    incompatible_no_root_alias_targets = True,
+    incompatible_no_root_crate_data = True,
+    # Every exec and target triple that takes part in a build: CI and the machines
+    # we develop on. Windows is left out: nothing builds there.
+    platform_triples = [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+    ],
+)
+use_repo(crate, "crates")
+
+# aws-lc-sys (reqwest -> rustls -> aws-lc-rs): its own build script compiles AWS-LC
+# with the hermetic @llvm C toolchain that rules_rust hands build scripts. rules_rs
+# also offers a fully hermetic replacement (bazel_dep "aws-lc" plus the annotations
+# in @rules_rs//3rd_party/aws-lc-sys:include.MODULE.bazel); see docs/bazel.md.
+crate.annotation(
+    crate = "aws-lc-sys",
+    gen_build_script = "on",
+)
+
+# rules_rs 0.2.4 unions sqlx-core features requested by sqlx-macros-core, which is in
+# Cargo.lock but not built (no `macros` feature), so sqlx-core gets `offline` and
+# `any` while Cargo leaves them off. sqlx-postgres must match or it does not compile.
+crate.annotation(
+    crate = "sqlx-postgres",
+    crate_features = [
+        "any",
+        "offline",
+    ],
+)

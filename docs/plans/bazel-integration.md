@@ -1,7 +1,32 @@
 # Bazel integration: one build graph for Rust and TypeScript
 
-> Status: proposal, nothing built. Researched 2026-11-12. Items marked **(verify)** come from reading docs and
-> other repositories, not from running Bazel on this workspace; Phase 1 settles them.
+> Status: Phases 1 and 2 (Rust builds, tests, clippy, dependency checks) done on 2026-11-13; the user guide is
+> [`../bazel.md`](../bazel.md). Phase 3 (TypeScript) and later are not started. Researched 2026-11-12. Items
+> marked **(verify)** come from reading docs; the Phase 1/2 outcomes below settle the Rust ones.
+
+## Phase 1 and 2 outcomes (2026-11-13)
+
+What running it showed, where it differs from the sketch below:
+
+- `all_crate_deps()` does include workspace members (as `//crates/<dir>` labels), and only the optional
+  dependencies whose feature is on. Features follow Cargo's workspace unification (`cargo build --workspace`),
+  not `--all-features`; `durable-runtime` adds `reqwest`/`sqlx` explicitly in its BUILD file.
+- Linux needed no explicit host platform and no `experimental_stub_libgcc_s`.
+- `aws-lc-sys` is not covered out of the box: rules_rs warns and offers the `aws-lc` module. Its source archive
+  could not be fetched from the sandbox it was built in, so `aws-lc-sys` runs its own build script with the
+  hermetic C toolchain instead (works). The hermetic module is a follow-up.
+- rules_rs 0.2.4 over-enables `sqlx-core` features (`offline`, `any`) from the unused `sqlx-macros-core`;
+  `sqlx-postgres` gets the same features through `crate.annotation` so it compiles.
+- rules_rs refuses compiled output that embeds the sandbox path, so `env!("CARGO_MANIFEST_DIR")` in
+  `durable-testkit` cannot stay absolute. Instead of the `DURABLE_CORPUS_DIR` change proposed below, the BUILD
+  file sets `CARGO_MANIFEST_DIR` to the package path: no source change.
+- The `cargo tree | grep` checks are a small test rule over rules_rust's `DepInfo` (`bazel/checks`), not
+  `genquery`: `bazel query deps()` loads the toolchains' whole label closure (LLVM sources, the macOS SDK).
+- Integration tests are named `<file>_test` (`tests/standalone.rs` clashed with the `:standalone` target).
+- CI runs without `--lockfile_mode=error`, so Cargo-only changes to `Cargo.lock` never need a Bazel run.
+- `bazel test //... --test_tag_filters=-docker` runs 42 targets and the same 286 test cases as
+  `cargo test --workspace --all-features` minus the container suites. The container suites were not run under
+  Bazel yet (no Docker where this was built); the CI `bazel` job is their first run.
 
 ## Context
 
