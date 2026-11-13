@@ -343,6 +343,7 @@ migration `0002`), and `ctx.is_replaying()`. Deferred work is tracked in [docs/B
 
 In progress, iteration 3 ([plan](docs/plans/iter3-sansio-core.md)): TypeScript and Python SDKs built on one
 Rust core.
-- Done: the sans-IO replay core and the engine's decisions in `durable-sm`, and the replay
-  conformance corpus. Rust workflows already run on that core.
-- Next: the Node binding.
+- Done: the sans-IO replay core and the engine's decisions in `durable-sm`, the replay
+  conformance corpus, the host abstraction, and the TypeScript binding (`bindings/typescript`, not yet
+  published to npm). Rust workflows already run on that core.
+- On hold: the Python binding, tracked in [docs/BACKLOG.md](docs/BACKLOG.md).

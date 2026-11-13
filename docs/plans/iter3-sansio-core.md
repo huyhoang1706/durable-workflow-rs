@@ -1,9 +1,10 @@
 # Iteration 3: a sans-IO core for TS/JS and Python SDKs
 
-> Status: P0–P2 and P3a are done. P3 (the TypeScript binding, `bindings/typescript`) is designed below; slices S1
-> and S2 are built, S3 is next. The design sections below are the original sketch. The
-> "as built" sections record where the code differs. `durable-core` was renamed `durable-spi` after P1 (#9); the
-> as-built notes keep the name used at the time.
+> Status: P0–P2, P3a and P3 are done. The TypeScript binding (`bindings/typescript`, slices S1–S4) is built and
+> meets the P3 "done when" row; its first npm release is waiting on the owner (see the backlog). P4, the Python
+> binding, is on hold and moved to the [backlog](../BACKLOG.md#python-binding). The design sections below are the
+> original sketch. The "as built" sections record where the code differs. `durable-core` was renamed `durable-spi`
+> after P1 (#9); the as-built notes keep the name used at the time.
 
 ## Context
 
@@ -282,8 +283,8 @@ or, for sync `def` steps, in a thread pool.
 | P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 ✅ | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
 | P3a ✅ | **Host abstraction** (see "P3a: hosting workflows written in other languages"): the engine runs any workflow through `HostWorkflow` / `HostExecution`, and Rust becomes the first host. | Suite and corpus pass unchanged. A scripted host with no Rust futures runs corpus workflows end to end on the real engine. |
-| P3 | `bindings/typescript` (napi-rs), see "P3: the TypeScript binding": embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/typescript-onboarding` passes the conformance corpus and a crash/resume chaos test. |
-| P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
+| P3 ✅ (not published) | `bindings/typescript` (napi-rs), see "P3: the TypeScript binding": embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/typescript-onboarding` passes the conformance corpus and a crash/resume chaos test. |
+| P4 (on hold) | `bindings/python` (PyO3 + maturin), same surface. Moved to the [backlog](../BACKLOG.md#python-binding). | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
 
 ## P0 as built
