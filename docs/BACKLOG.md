@@ -40,15 +40,6 @@ These come from iter1.
 - Retention cleanup for finished runs and their events.
 - Dashboard UI.
 
-## Engine
-
-- **Fan-out is quadratic in the number of steps in flight**, from [iter3](plans/iter3-sansio-core.md) (S4
-  measurements). One run with n parallel steps costs O(n²) in total: 117 µs per step at n = 250, 1686 µs at
-  n = 4000, in Rust and TypeScript alike. Each step completion is one turn of `run_loop` in
-  `crates/durable-runtime/src/engine.rs` (`Wake::Done` handles a single `StepDone`), and every turn recomputes the
-  frontier and walks it in `reap`, `decide` and `build_commit`. Drain every completion that is ready in one turn
-  (one commit for all of them), and keep the frontier incremental, or index it by key.
-
 ## TypeScript binding
 
 From [iter3](plans/iter3-sansio-core.md), S4.

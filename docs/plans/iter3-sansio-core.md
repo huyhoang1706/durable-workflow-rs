@@ -905,9 +905,37 @@ What this says:
   process.
 - **The fan-out cost is the engine's, not the binding's.** Per-step cost grows with the number of steps in flight,
   in Rust too (117 µs/step at 250, 1686 µs/step at 4000): the run loop handles one `StepDone` per turn and walks the
-  whole frontier each turn. See the backlog.
+  whole frontier each turn. Fixed after S4, see "Fan-out fix".
 
 **Not done:** publishing (needs the owner), musl and other targets, and a README for the npm page.
+
+## Fan-out fix (after S4)
+
+The S4 numbers showed that one run with n parallel steps cost O(n²) in the engine. Three changes, all in the
+shell and `durable-sm`, no change to the corpus or to a host:
+
+- **One turn per batch of results.** `run_loop` drains every `StepDone` that is ready (at most 1024) and records
+  them in one commit. Replay still delivers one outcome at a time, so a race picks the same winner live and on
+  replay. What changes is that the losers of a `select!` whose attempts finish in the same batch now reach history
+  too, where before the engine dropped them once the winner's commit released them.
+- **An incremental frontier.** `Replayer::take_frontier_changes` lists the commands whose frontier entry changed
+  (issued, moved on by history, resolved, released). The engine keeps a copy of the frontier minus the steps that
+  have a running attempt (`Idle` in `engine.rs`), and passes `decide` only that, with the attempts it left out
+  counted in `DecideInput::running_elsewhere`. A turn costs what changed, not everything that is open. A rebuild
+  starts the copy over from the new replayer and aborts attempts it no longer lists as open.
+- **A throttled in-flight overlay.** Every turn used to rewrite the cache's list of running attempts, which was
+  the biggest cost once turns were batched. It is now written at most every 100 ms, with a timed wake for a change
+  held back.
+
+Memory backend, Rust (`cargo run --release -p durable-workflow --example tiny_steps`), 4 vCPUs. The last rows are a
+new scenario of the example: step `i` sleeps `i × 250 µs`, so results arrive one by one and the floor is 250 µs/step.
+
+| Scenario | Before | After |
+|---|---|---|
+| 1 run × 2000 sequential steps | 37 µs/step | 40 µs/step |
+| 500 runs × 20 steps, 64 at once | 11 µs/step | 10 µs/step |
+| 1 run, 250 / 1000 / 4000 parallel steps | 118 / 360 / 1593 µs/step | 19 / 24 / 22 µs/step |
+| 1 run, 4000 parallel steps 250 µs apart | 1587 µs/step, 12.8 s CPU | 270 µs/step, 0.35 s CPU |
 
 ## Open questions
 
