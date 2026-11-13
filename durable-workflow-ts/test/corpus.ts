@@ -1,5 +1,5 @@
 // The replay conformance corpus (`crates/durable-testkit/corpus`), read from
-// TypeScript, and the two checks every binding runs against it.
+// TypeScript, and the two checks every SDK runs against it.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -21,7 +21,7 @@ export interface Case {
   result: Finish | null;
 }
 
-const dir = new URL("../../../crates/durable-testkit/corpus/", import.meta.url);
+const dir = new URL("../../crates/durable-testkit/corpus/", import.meta.url);
 
 export function loadAll(): Case[] {
   return readdirSync(dir)

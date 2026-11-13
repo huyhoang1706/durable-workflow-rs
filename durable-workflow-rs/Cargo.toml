@@ -24,12 +24,12 @@ standalone = ["postgres", "observable", "dep:durable-api", "dep:axum", "dep:toki
 [dependencies]
 durable-spi.workspace = true
 durable-runtime.workspace = true
-durable-macros = { path = "../durable-macros", optional = true }
+durable-macros = { path = "../crates/durable-macros", optional = true }
 durable-memory = { workspace = true, optional = true }
-durable-postgres = { path = "../../plugins/durable-postgres", optional = true }
-durable-redis = { path = "../../plugins/durable-redis", optional = true }
-durable-otel = { path = "../../plugins/durable-otel", optional = true }
-durable-api = { path = "../durable-api", optional = true }
+durable-postgres = { path = "../plugins/durable-postgres", optional = true }
+durable-redis = { path = "../plugins/durable-redis", optional = true }
+durable-otel = { path = "../plugins/durable-otel", optional = true }
+durable-api = { path = "../crates/durable-api", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "time"], optional = true }
 tracing = { workspace = true, optional = true }

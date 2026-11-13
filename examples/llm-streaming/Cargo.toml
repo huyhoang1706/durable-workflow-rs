@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-durable-workflow = { path = "../../crates/durable-workflow", features = ["postgres", "redis"] }
+durable-workflow = { path = "../../durable-workflow-rs", features = ["postgres", "redis"] }
 durable-api = { path = "../../crates/durable-api" }
 axum = "0.8"
 futures.workspace = true

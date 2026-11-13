@@ -3,14 +3,14 @@
 //! The engine owns replay: it drives history through the execution's
 //! [`Replayer`] and decides what to do next. A *host* owns the user code: it
 //! runs the workflow body, and turns a step key into a running attempt. The
-//! Rust SDK is one host; language bindings (Node, Python) are others.
+//! Rust SDK is one host; the TypeScript SDK (and later Python) are others.
 //!
 //! The replayer sits in a [`ReplayHandle`] that the engine and the host share.
 //! The host's ctx calls (`user_key`, `issue`, `release`, `random_u64`, ...) go
 //! into it directly and synchronously. The engine calls `advance`,
 //! `take_resolved`, `push_live`, `frontier` and `fault`.
 //!
-//! Hidden until the first binding ships: the shape may still change.
+//! Hidden until the host contract is stable: the shape may still change.
 
 use std::sync::Arc;
 

@@ -40,20 +40,20 @@ if cargo tree -p durable-workflow --features standalone -e normal | grep -q open
 fi
 cargo build -p durable-workflow --features standalone
 
-# Language bindings embed durable-sm: it must stay free of async runtimes and IO.
+# Every SDK embeds durable-sm: it must stay free of async runtimes and IO.
 if cargo tree -p durable-sm -e normal | grep -qE ' (tokio|futures|async-trait)[a-z_-]* v'; then
     echo "error: durable-sm depends on an async runtime" >&2
     exit 1
 fi
 
-# The TypeScript binding: the native addon, type checks, the corpus checks
+# The TypeScript SDK: the native addon, type checks, the corpus checks
 # through the FFI and the end-to-end tests (Vitest), and the tsdown bundle.
 # Needs Node >= 22.18. `test:servers` runs the Postgres/Redis cases too, on
 # containers it starts (or on DURABLE_TEST_DATABASE_URL / _REDIS_URL if set).
 if command -v node >/dev/null; then
-    (cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm run test:servers && npm run build)
+    (cd durable-workflow-ts && npm ci && npm run build:native && npm run typecheck && npm run test:servers && npm run build)
     # The example imports the built SDK (`dist/`, `durable.<platform>.node`) from above.
     (cd examples/typescript-onboarding && npm ci && npm run typecheck && npm run test:servers)
 else
-    echo "warning: node not found; skipping the TypeScript binding" >&2
+    echo "warning: node not found; skipping the TypeScript SDK" >&2
 fi

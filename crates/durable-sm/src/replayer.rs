@@ -5,7 +5,7 @@
 //! exhausted is the *frontier* the engine has to act on.
 //!
 //! The replayer never runs user code and never waits. A host (the Rust
-//! runtime, or a language binding) runs the code, and alternates:
+//! runtime, or another language SDK) runs the code, and alternates:
 //!
 //! ```text
 //! loop {

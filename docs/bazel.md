@@ -7,7 +7,7 @@ You never need Bazel to work on this repository; `./ci.sh` and every `cargo` com
 Bazel adds per-target caching: an unchanged crate's compile, clippy run and test results are cache hits, and
 each `tests/*.rs` file is its own target, so a change to one plugin reruns only that plugin's tests.
 
-The TypeScript binding and its example still build with npm only (see the plan in
+The TypeScript SDK and its example still build with npm only (see the plan in
 [`plans/bazel-integration.md`](plans/bazel-integration.md), Phase 3).
 
 ## Commands
@@ -80,7 +80,7 @@ durable_rust_crate(
 | doctests | `:doc_test` |
 | `tests/engine_async.rs` | `:engine_async_test`; `tests/common/**` is shared by every test file |
 | `[[bin]]`, `src/main.rs` | `:<bin name>`, e.g. `//crates/durable-cli:durable` |
-| `crate-type = ["cdylib"]` | `:<lib name>_shared`, e.g. `//bindings/typescript:durable_typescript_shared` |
+| `crate-type = ["cdylib"]` | `:<lib name>_shared`, e.g. `//durable-workflow-ts:durable_typescript_shared` |
 | `build.rs` | `:build_script` |
 | non-`.rs` files under `src/` (`include_str!`) | compile inputs |
 
@@ -105,7 +105,7 @@ files are picked up by globs.
 - **One configuration per crate.** Cargo builds a crate once per feature set requested; Bazel builds each target
   once. Features are the ones Cargo's workspace feature unification resolves, plus the extras listed in BUILD
   files, which together match `--all-features`. The `standalone` feature set has its own target,
-  `//crates/durable-workflow:standalone`, because `//bazel/checks` asserts it stays free of OpenTelemetry.
+  `//durable-workflow-rs:standalone`, because `//bazel/checks` asserts it stays free of OpenTelemetry.
 - **Dependency hygiene** (the `cargo tree | grep` checks in `ci.sh`) runs as tests:
   `//bazel/checks:durable_sm_is_sans_io` and `//bazel/checks:standalone_has_no_opentelemetry`.
 - **No absolute paths in compiled code.** rules_rs refuses an output that embeds the sandbox path, which is what
@@ -128,6 +128,6 @@ files are picked up by globs.
 
 ## Not covered yet
 
-- The TypeScript binding and example (Phase 3 of the plan).
+- The TypeScript SDK and example (Phase 3 of the plan).
 - A remote cache (BuildBuddy, Phase 5). Until then CI keeps a disk cache through `setup-bazel`.
 - Windows: not in `platform_triples`.

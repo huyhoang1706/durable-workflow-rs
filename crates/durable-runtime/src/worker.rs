@@ -98,7 +98,7 @@ impl WorkerBuilder {
         workflow.register(self)
     }
 
-    /// Register a workflow written for any host (a language binding, or a
+    /// Register a workflow written for any host (another language SDK, or a
     /// test double). Rust workflows use [`register`](Self::register).
     #[doc(hidden)]
     pub fn register_host(mut self, w: Arc<dyn HostWorkflow>) -> Self {

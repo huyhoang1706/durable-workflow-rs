@@ -1,5 +1,5 @@
 # The whole suite, as `./ci.sh` runs it locally: fmt, clippy, the Rust tests
-# (Postgres/Redis through testcontainers), the TypeScript binding and its
+# (Postgres/Redis through testcontainers), the TypeScript SDK and its
 # example (Postgres/Redis containers started by scripts/with-servers.sh).
 name: CI
 
@@ -30,7 +30,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: |
-            bindings/typescript/package-lock.json
+            durable-workflow-ts/package-lock.json
             examples/typescript-onboarding/package-lock.json
       - run: ./ci.sh
 

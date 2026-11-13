@@ -9,7 +9,7 @@ name = "durable"
 path = "src/main.rs"
 
 [dependencies]
-durable-workflow = { path = "../durable-workflow", features = ["postgres", "redis"] }
+durable-workflow = { path = "../../durable-workflow-rs", features = ["postgres", "redis"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 serde_json.workspace = true

@@ -1,128 +1,118 @@
 # durable-workflow
 
-Durable workflows for Rust that **adapt to your infrastructure** instead of the other way round.
+Durable workflows that **adapt to your infrastructure** instead of the other way round, in **Rust** and
+**TypeScript** (Python is planned). Every SDK is a first-class citizen: the same engine, the same backends, the same
+guarantees and the same conformance tests, with an API that feels native in each language.
 
 - **Decentralized.** No server. Workers coordinate only through the backends, so you can embed a
   worker in an existing app or run dedicated worker processes.
-- **Replay-based.** A workflow is ordinary Rust. Step results are memoized in a per-run event log,
+- **Replay-based.** A workflow is ordinary code in your language. Step results are memoized in a per-run event log,
   and a run resumes by replaying that log.
-- **Async and sync.** Write `async fn` workflows for I/O-heavy orchestration, or plain blocking
-  `fn` workflows for CPU-bound work (media, batch data). Blocking steps run on a bounded compute
-  pool and never on tokio's worker threads.
 - **Pluggable.** Postgres is the source of truth. Redis is a rebuildable queue/pub-sub/cache index.
-  Every slot is a trait; new backends are plugins.
+  Every slot is a trait; new backends are plugins, and every SDK gets them.
+- **One engine, many languages.** The replay state machine is a sans-IO core (`durable-sm`) that each SDK embeds.
+  Workers written in different languages can share one database, and the ops API and the CLI see all their runs.
+
+## SDKs
+
+| Language | Directory | Package | Status |
+|---|---|---|---|
+| Rust | [`durable-workflow-rs`](durable-workflow-rs) | crate `durable-workflow` | usable; `async fn` and blocking `fn` workflows |
+| TypeScript | [`durable-workflow-ts`](durable-workflow-ts) | npm `@durable/typescript` | usable, not yet published to npm |
+| Python | `durable-workflow-py` | | planned ([backlog](docs/BACKLOG.md#python-sdk)) |
+
+The same workflow in each:
+
+<table>
+<tr><th>Rust</th><th>TypeScript</th></tr>
+<tr><td>
 
 ```rust
 #[workflow(name = "user.onboarding", timeout = "7d")]
-async fn onboarding(ctx: WfAsyncCtx, _mailer: Dep<dyn Mailer>, user: Signup)
+async fn onboarding(ctx: WfAsyncCtx, user: Signup)
     -> Result<String, WorkflowError>
 {
-    send_email(&ctx, user.email.clone(), "Welcome!".into()).await?;      // memoized step
-    let verified: Option<bool> =
-        ctx.wait_for_signal("verified").timeout(Duration::from_secs(86_400)).await?; // suspends, holds no worker
-    Ok(if verified.is_some() { "verified" } else { "reminded" }.into())
+    send_email(&ctx, user.email.clone(), "Welcome!".into()).await?;
+    let verified: Option<bool> = ctx
+        .wait_for_signal("verified")
+        .timeout(Duration::from_secs(86_400))
+        .await?;
+    Ok(if verified == Some(true) { "verified" } else { "reminded" }.into())
 }
 
 #[step(retry = 5, timeout = "30s")]
-async fn send_email(mailer: Dep<dyn Mailer>, to: String, subject: String) -> Result<(), StepError> {
+async fn send_email(mailer: Dep<dyn Mailer>, to: String, subject: String)
+    -> Result<(), StepError>
+{
     mailer.send(&to, &subject, step::current().idempotency_key());
     Ok(())
 }
 ```
 
-See [`examples/embedded-axum`](examples/embedded-axum) (an existing axum app that shares its sqlx
-pool and mounts the ops API) and [`examples/standalone-worker`](examples/standalone-worker) (a
-dedicated worker with a CPU-bound sync workflow). [`examples/llm-streaming`](examples/llm-streaming)
-streams an LLM answer to a browser while a step runs.
+</td><td>
+
+```ts
+const onboarding = workflow(
+  "user.onboarding",
+  { timeoutMs: 7 * DAY_MS },
+  async (ctx, user: Signup) => {
+    await ctx.step("send-welcome", {
+      retry: retry.exponential(5),
+      timeoutMs: 30_000,
+      execute: (s) =>
+        mailer.send(user.email, "Welcome!", s.idempotencyKey),
+    });
+    const verified = await ctx
+      .waitForSignal("verified", { payload: z.boolean() })
+      .timeout(DAY_MS);
+    return verified === true ? "verified" : "reminded";
+  },
+);
+```
+
+</td></tr>
+</table>
+
+Each SDK has its own guide: [Rust](durable-workflow-rs/README.md), [TypeScript](durable-workflow-ts/README.md).
+Examples: [`examples/typescript-onboarding`](examples/typescript-onboarding),
+[`examples/embedded-axum`](examples/embedded-axum), [`examples/standalone-worker`](examples/standalone-worker),
+[`examples/llm-streaming`](examples/llm-streaming).
 
 ## Layout
 
 ```
-crates/
+durable-workflow-rs/  Rust SDK (crate `durable-workflow`); features: memory (default), macros (default), postgres,
+                      redis, standalone, observable (local JSON logs + spans), otel (opt-in OpenTelemetry)
+durable-workflow-ts/  TypeScript SDK (npm `@durable/typescript`): napi-rs addon + TypeScript API
+crates/               the shared engine, used by every SDK
   durable-sm/         sans-IO replay state machine, engine decisions and event model; no tokio, no IO
-                      (embedded by language SDK bindings)
   durable-spi/        ids, records, errors, every plugin trait (no infrastructure); re-exports the event model
-  durable-runtime/    replay engine (async + sync drivers), contexts, compute pool, Worker, Client
-  durable-macros/     #[workflow], #[step]
+  durable-runtime/    replay engine (async + sync drivers), host abstraction, compute pool, Worker, Client
+  durable-macros/     #[workflow], #[step] for the Rust SDK
   durable-api/        axum ops router (mountable or standalone)
   durable-cli/        the `durable` binary
   durable-testkit/    conformance suites for plugin authors, ManualClock, and the replay conformance corpus
-                      every language SDK must pass
-  durable-workflow/   facade; features: memory (default), macros (default), postgres, redis, standalone,
-                      observable (local JSON logs + spans), otel (opt-in OpenTelemetry)
+                      every SDK must pass
 plugins/
   durable-memory/     in-memory reference implementation (tests, dev)
   durable-postgres/   Store (sqlx), migrations
   durable-redis/      Queue (Lua), PubSub, Cache, RateLimiter, Streams
   durable-otel/       OpenTelemetry traces, metrics and logs (opt-in)
-examples/             embedded-axum, standalone-worker, llm-streaming
+examples/             embedded-axum, standalone-worker, llm-streaming (Rust); typescript-onboarding (TypeScript)
 ```
 
 Plugins depend only on `durable-spi`. `durable-runtime` depends only on `durable-spi` and `durable-sm`.
-`durable-sm` depends on neither, and CI keeps it free of async runtimes.
-
-## Quick start (in-memory)
-
-```rust
-let backend = durable_workflow::memory::backend();
-let worker = Worker::builder(backend.clone())
-    .dep::<dyn Mailer>(Arc::new(SmtpMailer::from_env()?))
-    .register(onboarding)                 // the #[workflow] fn itself
-    .build()?                              // fails fast if a declared Dep<T> is missing
-    .spawn();                              // runs inside your tokio runtime
-
-let client = Client::new(backend);
-let run = client.start(onboarding, &signup, StartOptions::default().idempotency_key("signup:ann")).await?;
-let welcome: String = run.handle().unwrap().result().await?;
-```
-
-Production backends:
-
-```rust
-let store = PostgresStore::from_pool(app_pool).schema("durable");   // reuse the host's pool
-store.migrate().await?;                                             // own migration table, advisory-locked
-let redis = durable_workflow::redis::connect(&redis_url, "dw").await?;
-let backend = Backend::builder()
-    .namespace("billing")
-    .store(store).queue(redis.queue).pubsub(redis.pubsub)
-    .cache(redis.cache).rate_limiter(redis.rate_limiter)
-    .build()?;
-```
-
-`PostgresStore` + the in-memory queue already gives a durable single-process mode without Redis:
-the reconciler rebuilds the queue from `wake_at` on boot.
-
-## Async or sync?
-
-Workflow bodies are orchestration code. Heavy work belongs in steps, and every step can be async
-(I/O) or blocking (CPU) in either kind of workflow.
-
-| | `WfAsyncCtx` (`async fn`) | `WfSyncCtx` (`fn`) |
-|---|---|---|
-| I/O step on tokio | `ctx.step(name, async move {..})` | `ctx.step(name, async move {..})` (driver thread blocks) |
-| CPU step on the compute pool | `ctx.step_blocking(name, \|\| ..)`, `ctx.map_blocking(..)` | `ctx.step_blocking(name, \|\| ..)`, `ctx.map(..)`, `ctx.join((..))`, `ctx.join2(..)` |
-| sleep / signal / event / hook | `.await` | blocking call |
-
-A sync workflow runs on its own driver thread (separate from the compute pool, so a blocked body
-can never deadlock its own steps). Blocking steps cannot be preempted: on timeout or cancel the
-step is marked failed and `step::current().is_cancelled()` turns true, but the pool slot stays busy
-until the closure returns, so long CPU steps should poll it.
+`durable-sm` depends on neither, and CI keeps it free of async runtimes so any language can embed it.
 
 ## Determinism rules
 
 Replay re-runs your workflow function against the recorded log, so the body must make the same
-`ctx` calls in the same order every time.
+`ctx` calls in the same order every time. Each SDK spells out the details for its language.
 
-- Do I/O and side effects **inside steps** only. `Dep<T>` for effectful dependencies refuses to be
-  dereferenced outside a step and turns the mistake into a visible engine fault. Register
-  deterministic, read-only config with `.dep_pure()` to use it in the body.
-- Use `ctx.now()`, `ctx.random_u64()`, `ctx.uuid()` instead of the system clock and RNG.
-  `ctx.uuid()` is a UUIDv7 stamped with `ctx.now()`, strictly increasing within a run.
-- Await only `ctx` futures. Awaiting anything else (a raw `tokio::sleep`, a channel) is detected and
-  reported as an engine fault.
-- Race `ctx` futures with `tokio::select! { biased; .. }`. An unbiased `select!` polls its branches in
-  random order. Replay still matches by key and picks the same winner, but the commands are issued in
-  a different order each time.
+- Do I/O and side effects **inside steps** only.
+- Use the context's clock, random numbers and UUIDs (`ctx.now()`, `ctx.uuid()`, ...) instead of the system clock and
+  RNG. `ctx.uuid()` is a UUIDv7 stamped with `ctx.now()`, strictly increasing within a run.
+- Wait only on `ctx` calls in the workflow body, and race them with the SDK's own race.
 - Steps are matched by key: your name plus an occurrence counter (`charge`, `charge#1`). Names of
   steps, sleeps, waits and hooks must be non-empty and may not contain `#`, `[` or `]`, which
   generated keys use; such a name faults the run. Renaming a step, or changing its kind, for an
@@ -141,107 +131,27 @@ executions (configurable).
 
 ## Failures, retries, cancellation
 
-- Any step error is retryable by default. `StepError::fatal(..)` stops retries,
-  `StepError::retry_after(d, ..)` sets the backoff, and `ClassifyError` lets a dependency's error
-  type choose. Panics inside a step are retryable failures.
-- Backoffs up to `inline_retry_threshold` are waited out in-process; longer ones suspend the run.
-- An exhausted step returns `Err(WorkflowError::Step(..))` to your code, which can recover or `?`.
-- `client.cancel(id, reason)` works on waiting runs and mid-step. `client.retry(id)` re-runs a
-  failed run from its failure point (succeeded steps stay memoized, failed ones get a fresh budget).
-- Whole-run deadline: `timeout = "1h"`.
-
-## Flow control
-
-```rust
-#[workflow(name = "video.publish",
-           concurrency(limit = 4, key = "/channel_id"),   // executing runs only; sleeping runs hold no slot
-           throttle(limit = 100, period = "1m"),          // delays starts, never drops them (burst = 1)
-           rate_limit(limit = 10, period = "1s"))]        // rejects excess starts: StartOutcome::RateLimited
-```
+- Any step error is retryable by default; each SDK has a way to mark an error fatal or set its backoff.
+- Backoffs up to the worker's inline retry threshold are waited out in-process; longer ones suspend the run.
+- An exhausted step fails the step call in your workflow code, which can recover or let it fail the run.
+- Runs can be cancelled while waiting and mid-step. A failed run can be retried from its failure point (succeeded
+  steps stay memoized, failed ones get a fresh budget).
+- Whole-run deadline: a workflow timeout.
 
 ## Streaming
 
 Two different things, on purpose:
 
-- **Run state (durable).** `client.watch(run_id).after(seq).await?` is a live, resumable feed of the
-  run's events, built on the event log: every committed event in order, exactly once, ending after
-  the terminal event. `RunUpdate::StepStarted` is an extra best-effort hint.
+- **Run state (durable).** A live, resumable feed of the run's events, built on the event log: every committed
+  event in order, exactly once, ending after the terminal event.
 - **User streams (transient).** A step writes named chunks (LLM tokens, progress) that live in the
-  `StreamStore` (Redis Streams, with a TTL, 24 h by default) and are **never** written to Postgres:
+  `StreamStore` (Redis Streams, with a TTL, 24 h by default) and are **never** written to Postgres. The step's return
+  value is the durable answer; the chunks are a live preview of it. Losing a stream loses nothing durable.
 
-```rust
-#[step]
-async fn generate(llm_token_stream: BoxStream<'static, String>) -> Result<String, StepError> {
-    let tokens = durable_workflow::step::current().stream::<String>("tokens");
-    let parts = tokens.forward(llm_token_stream).await?;   // or tokens.write(&chunk)? per chunk
-    Ok(parts.concat())                                     // the durable answer
-}
-// in the workflow body: generate(&ctx, llm_token_stream).await?
-
-let mut feed = client.stream::<String>(run_id, "tokens").await?;   // any process
-```
-
-The step's return value is the durable answer; the chunks are a live preview of it. A client that
-renders tokens should swap in `StepSucceeded.output` (from `watch`) when it arrives. That also
-recovers a client whose stream expired, was flushed, or that connected late. Losing a stream loses
-nothing durable.
-
-How readers see retries: each attempt's first chunk is preceded by an `AttemptStarted` marker, and
-a failed attempt ends with `AttemptFailed`. **When you see either, drop what you hold for that step
-key** (a crashed worker's partial output is replaced the same way, because its re-run starts with
-a new marker). A stream store that caps its length (Redis keeps about `max_len` entries,
-10 000 by default) drops the oldest chunks first, markers included. A reader that starts from
-the beginning of a long stream should therefore keep only the highest `attempt` it sees for each
-step key, rather than rely on an `AttemptStarted` being there. Writers are limited to steps. Writes are buffered and flushed every 25 ms
-(`WorkerBuilder::stream_flush_interval`) or 64 chunks, before the step's result is committed; a
-flush failure is logged and never fails the step. With no stream store configured, writes are
-no-ops (one warning per worker). The stream feed ends when the stream closes (the run ending
-closes all its streams) and never hangs on an expired stream of a finished run.
-
-`ctx.is_replaying()` is true while history is replayed into the workflow, so logging in a workflow
-body can skip the repeats.
-
-Over HTTP the same feeds are Server-Sent Events: `GET /v1/runs/{id}/watch`,
-`GET /v1/runs/{id}/streams` and `GET /v1/runs/{id}/streams/{name}`; the SSE `id` is the event seq or
-stream cursor, and `Last-Event-ID` (or `?after=`) resumes. From the CLI: `durable runs watch <id>`
-and `durable streams list|tail <id> [name]` (streams need `--redis-url`).
-
-## Observability
-
-The runtime emits `tracing` spans (`workflow.start`, `workflow.execute`, `step`) with
-`durable.run_id`, `durable.workflow`, `durable.step.key` and `durable.step.attempt`, and reports
-metrics to an `Observer` slot of the backend. Nothing in `durable-runtime` depends on OpenTelemetry.
-
-**Local first (feature `observable`, on in `standalone`).** With zero configuration the standalone
-worker prints one JSON line per closed span to stdout (with `time.busy` / `time.idle`) and writes
-rotating JSON logs to `./logs`; every log line carries the enclosing span fields, so logs and spans
-join on the run id. Embedded apps that own their subscriber add `observable::layers(..)` to it.
-
-| Variable | Default | |
-|---|---|---|
-| `DURABLE_TRACES` | `stdout` | `stdout`, `none` |
-| `DURABLE_LOGS` | `file` | `file`, `stdout` (pretty), `none` |
-| `DURABLE_METRICS` | `none` | local metrics are not implemented |
-| `DURABLE_LOG_DIR` | `./logs` | created if missing; an unwritable path fails startup with a clear error |
-| `DURABLE_LOG_FILE_PREFIX` | `durable` | |
-| `DURABLE_LOG_ROTATION` | `daily` | `minutely`, `hourly`, `daily`, `never` |
-| `DURABLE_LOG_MAX_FILES` | `7` | older files are pruned |
-| `DURABLE_STREAM_TTL_SECS` | `86400` | how long user streams are kept |
-
-**OpenTelemetry (opt-in feature `otel`, never on by default).** Add
-`features = ["standalone", "otel"]` and set the standard variables
-(`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`,
-`OTEL_{TRACES,METRICS,LOGS}_EXPORTER`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`). Each
-signal that has OTLP configured is exported over OTLP; every other signal keeps its local sink, and
-an explicit `DURABLE_*` choice wins. The trace context is stored on the run, so a run is **one
-trace** however many executions, workers and sleeps it spans: `workflow.start` → `workflow.execute`
-(one per execution) → `step`. Spans you create inside a step nest under it, and a `tracing` event
-in a step becomes a log record with that trace id. Metrics: `durable.runs.started|finished`,
-`durable.run.duration`, `durable.execution.duration`, `durable.step.duration|attempts`,
-`durable.schedule_to_start`, `durable.commit.duration`, `durable.engine.faults`,
-`durable.stream.chunks`, and worker gauges. `docker compose up -d otel-lgtm` starts a collector with
-Tempo, Mimir, Loki and Grafana (http://localhost:3000). Other sinks (DuckDB, ClickHouse) are
-`OtelConfig` exporters away: `span_exporter`, `log_exporter`, `metric_exporter`.
+Over HTTP both feeds are Server-Sent Events: `GET /v1/runs/{id}/watch`, `GET /v1/runs/{id}/streams` and
+`GET /v1/runs/{id}/streams/{name}`; the SSE `id` is the event seq or stream cursor, and `Last-Event-ID` (or `?after=`)
+resumes. The [Rust guide](durable-workflow-rs/README.md#streaming-in-rust) covers writing and reading streams and how
+readers see retries.
 
 ## Ops API and CLI
 
@@ -265,15 +175,6 @@ durable streams list <run-id>      durable streams tail <run-id> [name] [--after
 durable signal <run-id> <name> --payload '...'      durable event send <name> --data '...'
 ```
 
-Standalone worker: `durable_workflow::standalone::run(Config::from_env()?, |w| w.register(my_workflow))`
-handles SIGTERM/SIGINT (drain, then hand back anything still running), health endpoints, the optional
-ops API (`DURABLE_ENABLE_API`, `DURABLE_API_TOKEN`) and observability setup (see above). It listens on `DURABLE_HTTP_ADDR`,
-`127.0.0.1:17080` by default; in a container set `0.0.0.0:17080` so probes can reach it. It refuses
-to serve the ops API without a token on a non-loopback address unless `DURABLE_API_INSECURE=1` is set.
-
-A `Client` (and so the ops API and the CLI) only sees its backend's namespace: runs, hook tokens and
-workflow definitions of other namespaces sharing the same database are invisible to it.
-
 ## Writing a plugin
 
 Implement a trait from `durable-spi` (`Store`, `Queue`, `PubSub`, `Cache`, `RateLimiter`,
@@ -295,18 +196,18 @@ and the queue's concurrency, throttle and lease semantics.
 ## Development
 
 ```
-./ci.sh     # fmt, clippy -D warnings, all tests (needs Docker for Postgres/Redis/CLI/chaos tests)
+./ci.sh     # fmt, clippy -D warnings, all Rust tests, the TypeScript SDK and example (needs Docker and Node >= 22.18)
 docker compose up -d    # postgres:17 + redis:7 for the examples
 ```
 
-The Rust workspace also builds with Bazel, for per-crate and per-test-file caching: `bazel test //...`. Cargo
-stays the source of truth and Bazel is optional; see [docs/bazel.md](docs/bazel.md).
+Each SDK's guide lists its own commands. The Rust workspace also builds with Bazel, for per-crate and per-test-file
+caching: `bazel test //...`. Cargo stays the source of truth and Bazel is optional; see [docs/bazel.md](docs/bazel.md).
 
-The replay conformance corpus (`crates/durable-testkit/corpus`) pins how every history replays. A change to
+The replay conformance corpus (`crates/durable-testkit/corpus`) pins how every history replays, and every SDK runs it. A change to
 replay behaviour fails `replay_corpus`; if the change is intended, regenerate the corpus with
 `DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus` and review the diff.
 
-The chaos suite (`crates/durable-workflow/tests/chaos.rs`) runs on real Postgres + Redis with
+The chaos suite (`durable-workflow-rs/tests/chaos.rs`) runs on real Postgres + Redis with
 several workers in one process: killing workers mid-step, `FLUSHALL` mid-flight, concurrency limits
 across workers, throttle spacing and start-time rate limits, and streaming steps through worker
 kills and a Redis flush.
@@ -314,39 +215,12 @@ kills and a Redis flush.
 Without Docker, point the tests at running servers: `DURABLE_TEST_POSTGRES_URL`,
 `DURABLE_TEST_REDIS_URL` and (for the test that runs `FLUSHALL`) `DURABLE_TEST_REDIS_FLUSHABLE_URL`.
 
-## Not yet implemented
+## Status
 
-Child workflows, cron, debounce/batching/priority, blob offload for large payloads,
+Not yet implemented: child workflows, cron, debounce/batching/priority, blob offload for large payloads,
 versioning/patching APIs, retention cleanup, a dashboard UI and first-party integration clients.
 
-Added after iteration 1:
-
-- **History cache.** A suspended run's event log is cached (`Cache`, key `dw:hist:<run>`) together
-  with its `last_seq`; the next execution skips `Store::load_events` when it still matches the
-  run's `last_seq`, and falls back to the store otherwise.
-- **In-flight overlay.** `GET /v1/runs/{id}` on a non-terminal run adds `in_flight`
-  (`worker`, `since`, `deliveries`, `steps`: step key to attempt) when the backend has a cache.
-  Name workers with `WorkerBuilder::worker_id`. `Client::in_flight(id)` exposes the same data.
-- **`hook.dispose()`** (`ctx.dispose_hook(hook)` in sync workflows) releases a hook token while the
-  run keeps going: new `HookDisposed` event, honoured by every `Store` (conformance case
-  `hook_dispose_releases_the_token`).
-- **`ClassifyError` for `reqwest` and `sqlx`** behind the `reqwest` / `sqlx` cargo features of
-  `durable-runtime` (forwarded by `durable-workflow`). `durable_runtime::classify::check_response`
-  turns a `reqwest::Response` into a `StepError`: 429 honours `Retry-After`, 408 and 5xx retry, other
-  statuses are fatal. For `sqlx`, serialization failures, deadlocks, connection and pool errors
-  retry; everything else is fatal. Use `StepError::classified(err)`.
-- **`ctx.join((("a", fa), ("b", fb), ...))`** runs up to 8 blocking steps with different output
-  types in parallel in sync workflows (`join2` remains).
-- **Compile-fail tests** (`trybuild`, `crates/durable-workflow/tests/ui`) pin the `#[workflow]` /
-  `#[step]` error messages.
-
-Added in iteration 2 ([plan](docs/plans/iter2.md)): streaming (above), the `Observer` slot and
-`plugins/durable-otel`, the local-first `observable` module, `trace_context` on runs (Postgres
-migration `0002`), and `ctx.is_replaying()`. Deferred work is tracked in [docs/BACKLOG.md](docs/BACKLOG.md).
-
-In progress, iteration 3 ([plan](docs/plans/iter3-sansio-core.md)): TypeScript and Python SDKs built on one
-Rust core.
-- Done: the sans-IO replay core and the engine's decisions in `durable-sm`, the replay
-  conformance corpus, the host abstraction, and the TypeScript binding (`bindings/typescript`, not yet
-  published to npm). Rust workflows already run on that core.
-- On hold: the Python binding, tracked in [docs/BACKLOG.md](docs/BACKLOG.md).
+Iteration 3 ([plan](docs/plans/iter3-sansio-core.md)) moved the engine onto one sans-IO core shared by every SDK:
+the replay core and the engine's decisions in `durable-sm`, the replay conformance corpus, the host abstraction, and
+the TypeScript SDK. The Rust SDK runs on the same core. The Python SDK is on hold and tracked in
+[docs/BACKLOG.md](docs/BACKLOG.md), with the rest of the deferred work.

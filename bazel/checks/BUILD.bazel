@@ -1,7 +1,7 @@
 # Dependency hygiene, checked on the Bazel graph instead of `cargo tree | grep`.
 load(":forbidden_crates.bzl", "forbidden_crates_test")
 
-# Language bindings embed durable-sm: it must stay free of async runtimes and IO.
+# Every SDK embeds durable-sm: it must stay free of async runtimes and IO.
 forbidden_crates_test(
     name = "durable_sm_is_sans_io",
     crate = "//crates/durable-sm",
@@ -16,6 +16,6 @@ forbidden_crates_test(
 # `otel` feature pulls it in.
 forbidden_crates_test(
     name = "standalone_has_no_opentelemetry",
-    crate = "//crates/durable-workflow:standalone",
+    crate = "//durable-workflow-rs:standalone",
     forbidden = ["opentelemetry"],
 )

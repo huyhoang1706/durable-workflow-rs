@@ -1,9 +1,9 @@
-# Prebuilt addons for the TypeScript binding.
+# Prebuilt addons for the TypeScript SDK.
 #
-# Every run builds the addon on each platform, runs the binding's tests where
+# Every run builds the addon on each platform, runs the SDK's tests where
 # the runner can load it, packs the npm packages and smoke-tests them from a
 # clean project. Pushing a tag `typescript-v<version>` (the version in
-# bindings/typescript/package.json) also publishes them to npm: the platform
+# durable-workflow-ts/package.json) also publishes them to npm: the platform
 # packages `@durable/typescript-<platform>` and then `@durable/typescript`,
 # which depends on them optionally. Publishing needs the NPM_TOKEN secret in
 # the `npm` environment.
@@ -14,7 +14,7 @@ on:
     tags: ["typescript-v*"]
   pull_request:
     paths:
-      - bindings/typescript/**
+      - durable-workflow-ts/**
       - crates/**
       - plugins/**
       - Cargo.lock
@@ -26,7 +26,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: bindings/typescript
+    working-directory: durable-workflow-ts
 
 jobs:
   build:
@@ -67,7 +67,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: bindings/typescript/package-lock.json
+          cache-dependency-path: durable-workflow-ts/package-lock.json
       - run: npm ci
       - run: npx napi build --platform --no-js --release --strip --target ${{ matrix.target }} -p durable-typescript
         shell: bash
@@ -79,7 +79,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}
-          path: bindings/typescript/durable.*.node
+          path: durable-workflow-ts/durable.*.node
           if-no-files-found: error
 
   package:
@@ -92,22 +92,22 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: bindings/typescript/package-lock.json
+          cache-dependency-path: durable-workflow-ts/package-lock.json
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
-          path: bindings/typescript/artifacts
+          path: durable-workflow-ts/artifacts
       # Fails unless every target in package.json `napi.targets` was built.
       - run: npx napi artifacts --output-dir artifacts
       - run: npm run build
       - name: Pack
         run: |
-          mkdir -p ../../packages
-          for dir in npm/*/; do npm pack "$dir" --pack-destination ../../packages; done
-          npm pack --pack-destination ../../packages
-          ls -l ../../packages
+          mkdir -p ../packages
+          for dir in npm/*/; do npm pack "$dir" --pack-destination ../packages; done
+          npm pack --pack-destination ../packages
+          ls -l ../packages
       - name: Smoke-test the packed packages from a clean project
-        run: node scripts/smoke-test.mjs ../../packages/durable-typescript-[0-9]*.tgz ../../packages/durable-typescript-linux-x64-gnu-*.tgz
+        run: node scripts/smoke-test.mjs ../packages/durable-typescript-[0-9]*.tgz ../packages/durable-typescript-linux-x64-gnu-*.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: npm-packages
@@ -130,7 +130,7 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: npm
-          cache-dependency-path: bindings/typescript/package-lock.json
+          cache-dependency-path: durable-workflow-ts/package-lock.json
       - name: Check the tag against package.json
         run: |
           version=$(node -p 'require("./package.json").version')
@@ -141,7 +141,7 @@ jobs:
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
-          path: bindings/typescript/artifacts
+          path: durable-workflow-ts/artifacts
           pattern: bindings-*
       - run: npx napi artifacts --output-dir artifacts
       - run: npm run build

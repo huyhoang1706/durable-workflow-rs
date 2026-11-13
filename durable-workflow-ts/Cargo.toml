@@ -9,7 +9,7 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 # The `napi_*` symbols only exist inside a Node process, so a test executable
-# cannot link. The binding is tested from TypeScript (`npm test`).
+# cannot link. The addon is tested from TypeScript (`npm test`).
 test = false
 doctest = false
 
@@ -19,7 +19,7 @@ durable-runtime.workspace = true
 durable-sm.workspace = true
 durable-spi.workspace = true
 # `connect`: a backend from URLs (Postgres store, optional Redis).
-durable-workflow = { path = "../../crates/durable-workflow", default-features = false, features = ["memory", "postgres", "redis"] }
+durable-workflow = { path = "../durable-workflow-rs", default-features = false, features = ["memory", "postgres", "redis"] }
 async-trait.workspace = true
 chrono.workspace = true
 napi = { version = "3", default-features = false, features = ["napi6", "serde-json", "async"] }

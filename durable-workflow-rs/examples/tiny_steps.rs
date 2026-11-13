@@ -1,4 +1,4 @@
-//! The tiny-step workloads of `bindings/typescript/bench/tiny-steps.ts`, with
+//! The tiny-step workloads of `durable-workflow-ts/bench/tiny-steps.ts`, with
 //! Rust workflows on the memory backend: the baseline the TypeScript numbers
 //! are compared with, plus a fan-out whose steps finish one by one.
 //!

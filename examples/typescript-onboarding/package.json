@@ -11,10 +11,10 @@
     "start": "node src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:servers": "../../bindings/typescript/scripts/with-servers.sh vitest run"
+    "test:servers": "../../durable-workflow-ts/scripts/with-servers.sh vitest run"
   },
   "dependencies": {
-    "@durable/typescript": "file:../../bindings/typescript",
+    "@durable/typescript": "file:../../durable-workflow-ts",
     "zod": "^4.6.7"
   },
   "devDependencies": {
