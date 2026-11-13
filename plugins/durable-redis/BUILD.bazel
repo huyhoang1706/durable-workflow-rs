@@ -1,0 +1,13 @@
+load("@crates//durable-redis:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("//bazel:rust.bzl", "DOCKER_TEST_TAGS", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    crate_data = crate_data,
+    test_tags = {
+        "conformance": DOCKER_TEST_TAGS,
+        "pubsub": DOCKER_TEST_TAGS,
+        "streams": DOCKER_TEST_TAGS,
+    },
+)

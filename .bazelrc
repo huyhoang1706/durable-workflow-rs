@@ -1,0 +1,35 @@
+# Bazel builds the Rust workspace next to Cargo; Cargo.toml / Cargo.lock stay the
+# source of truth. See docs/bazel.md.
+
+common --enable_platform_specific_config
+
+# Only the hermetic @llvm C/C++ toolchain: never the machine's compiler, so cache
+# keys do not depend on what is installed on the host or CI runner.
+common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+common --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
+common --incompatible_strict_action_env
+
+test --test_output=errors
+# The Docker-tagged tests: testcontainers finds the daemon through the first three
+# when set; the DURABLE_TEST_* URLs point the tests at running servers instead.
+test --test_env=DOCKER_HOST
+test --test_env=TESTCONTAINERS_HOST_OVERRIDE
+test --test_env=TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE
+test --test_env=DURABLE_TEST_POSTGRES_URL
+test --test_env=DURABLE_TEST_REDIS_URL
+test --test_env=DURABLE_TEST_REDIS_FLUSHABLE_URL
+
+# Clippy on every Rust target, cached per crate. Warnings are errors, as in ci.sh:
+#   bazel build --config=clippy //...
+build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:clippy --output_groups=+clippy_checks
+build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+
+# No --lockfile_mode=error: a Cargo-only change to Cargo.lock must not need a Bazel
+# run to pass CI. MODULE.bazel.lock is refreshed by whoever next runs Bazel.
+common:ci --keep_going
+common:ci --verbose_failures
+common:ci --announce_rc
+
+# Machine-local settings (a disk cache, a remote cache key, ...).
+try-import %workspace%/user.bazelrc

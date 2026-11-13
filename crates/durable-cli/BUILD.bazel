@@ -1,0 +1,13 @@
+load("@crates//durable-cli:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("//bazel:rust.bzl", "DOCKER_TEST_TAGS", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    crate_data = crate_data,
+    test_data = {"smoke": [":durable"]},
+    # `env!("CARGO_BIN_EXE_durable")`: Cargo sets it for integration tests. Here it
+    # is the binary's path in the runfiles tree, which is the test's working directory.
+    test_rustc_env = {"smoke": {"CARGO_BIN_EXE_durable": "$(rootpath :durable)"}},
+    test_tags = {"smoke": DOCKER_TEST_TAGS},
+)

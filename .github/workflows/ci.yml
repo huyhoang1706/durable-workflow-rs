@@ -33,3 +33,21 @@ jobs:
             bindings/typescript/package-lock.json
             examples/typescript-onboarding/package-lock.json
       - run: ./ci.sh
+
+  # The Rust workspace through Bazel (docs/bazel.md), next to the Cargo job above.
+  # Both must pass: Cargo stays the source of truth, and this job proves the
+  # BUILD files and MODULE.bazel.lock still agree with Cargo.toml / Cargo.lock.
+  bazel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@f34d6a05eae3c24acab7fa54587492daeaeffdab # 0.19.2
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ github.job }}
+          repository-cache: true
+      # Clippy (warnings are errors) on every crate, then every test, including the
+      # Postgres/Redis suites (Docker is available on the runner).
+      - run: bazel build --config=ci --config=clippy //...
+      - run: bazel test --config=ci //...

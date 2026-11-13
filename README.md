@@ -299,6 +299,9 @@ and the queue's concurrency, throttle and lease semantics.
 docker compose up -d    # postgres:17 + redis:7 for the examples
 ```
 
+The Rust workspace also builds with Bazel, for per-crate and per-test-file caching: `bazel test //...`. Cargo
+stays the source of truth and Bazel is optional; see [docs/bazel.md](docs/bazel.md).
+
 The replay conformance corpus (`crates/durable-testkit/corpus`) pins how every history replays. A change to
 replay behaviour fails `replay_corpus`; if the change is intended, regenerate the corpus with
 `DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus` and review the diff.

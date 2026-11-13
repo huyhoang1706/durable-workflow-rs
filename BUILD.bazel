@@ -1,0 +1,5 @@
+# Read by `crate.from_cargo` in MODULE.bazel.
+exports_files([
+    "Cargo.lock",
+    "Cargo.toml",
+])

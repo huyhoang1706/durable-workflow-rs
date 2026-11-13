@@ -4,6 +4,31 @@
 # their own containers, so Docker must be running.
 set -euo pipefail
 cargo fmt --all --check
+
+# Bazel builds the same crates (docs/bazel.md). It needs no Bazel to check, and it is
+# the one thing a Cargo-only change can forget: a new crate needs a BUILD.bazel.
+missing=0
+for dir in $(cargo metadata --no-deps --format-version 1 |
+    grep -o '"manifest_path":"[^"]*"' | sed -E 's|.*"(.*)/Cargo.toml"|\1|'); do
+    if [[ ! -f "$dir/BUILD.bazel" ]]; then
+        pkg=$(sed -nE 's/^name = "(.*)"/\1/p' "$dir/Cargo.toml" | head -1)
+        cat >&2 <<EOF
+error: ${dir#"$PWD"/} has no BUILD.bazel. Create it with:
+
+load("@crates//$pkg:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("//bazel:rust.bzl", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    crate_data = crate_data,
+)
+
+EOF
+        missing=1
+    fi
+done
+[[ $missing -eq 0 ]]
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 

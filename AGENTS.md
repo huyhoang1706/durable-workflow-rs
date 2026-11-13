@@ -10,6 +10,9 @@ cargo test -p durable-runtime --test engine_async <name>     # one test
 cargo test -p durable-workflow --test compile_fail           # trybuild UI tests for the macros (tests/ui/*.stderr)
 DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus   # rewrite the replay conformance corpus (durable-testkit/corpus)
 docker compose up -d                      # postgres:17 + redis:7 for the examples
+bazel test //... --test_tag_filters=-docker   # optional: the Rust workspace through Bazel (docs/bazel.md); drop the filter with Docker running
+bazel test //crates/durable-runtime:engine_async_test   # one test file under Bazel (`tests/<name>.rs` -> `:<name>_test`)
+bazel build --config=clippy //...         # clippy -D warnings under Bazel
 cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test && npm run build   # TypeScript binding (Node >= 22.18): TS 7, Vitest, tsdown
 cd bindings/typescript && npm run build:native:release && npm run bench   # tiny-step throughput; Rust baseline: cargo run --release -p durable-workflow --example tiny_steps
 cd bindings/typescript && npm run test:servers   # also the binding's Postgres/Redis cases, on throwaway containers (npm test skips them)
@@ -18,6 +21,8 @@ cd examples/typescript-onboarding && npm ci && npm run typecheck && npm run test
 ```
 
 `examples/typescript-onboarding` is an npm project, not a crate: it is excluded from the Cargo workspace.
+
+The Rust crates build with Cargo or Bazel. Cargo is the source of truth; Bazel reads `Cargo.toml` / `Cargo.lock` through `rules_rs`, so dependency and feature changes need no Bazel edits. A new crate needs a `BUILD.bazel` (`./ci.sh` prints it), a container test needs `DOCKER_TEST_TAGS`; see `docs/bazel.md`. Do not hand-write dependency lists in BUILD files.
 
 Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-sm`, `durable-spi`, `durable-runtime`, `durable-testkit`, `durable-memory` and `durable-macros`.
 

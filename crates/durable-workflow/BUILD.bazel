@@ -1,0 +1,50 @@
+load("@crates//durable-workflow:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+load("//bazel:rust.bzl", "DOCKER_TEST_TAGS", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    crate_data = crate_data,
+    test_tags = {
+        "chaos": DOCKER_TEST_TAGS,
+        # trybuild runs `cargo` at test time, which a Bazel test cannot do:
+        # `cargo test -p durable-workflow --test compile_fail`.
+        "compile_fail": ["manual"],
+    },
+)
+
+# The crate as `cargo build -p durable-workflow --features standalone` builds it.
+# Bazel builds each target in one configuration, so this feature set is its own
+# target; //bazel/checks asserts it stays free of OpenTelemetry. Keep the lists in
+# step with `[features]` in Cargo.toml.
+rust_library(
+    name = "standalone",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_features = [
+        "default",
+        "macros",
+        "memory",
+        "observable",
+        "postgres",
+        "standalone",
+    ],
+    crate_name = "durable_workflow",
+    crate_root = "src/lib.rs",
+    edition = crate_data()["edition"],
+    visibility = ["//bazel/checks:__pkg__"],
+    deps = [
+        "//crates/durable-api",
+        "//crates/durable-macros",
+        "//crates/durable-runtime",
+        "//crates/durable-spi",
+        "//plugins/durable-memory",
+        "//plugins/durable-postgres",
+        "@crates//axum",
+        "@crates//tokio",
+        "@crates//tracing",
+        "@crates//tracing-appender",
+        "@crates//tracing-subscriber",
+    ],
+)

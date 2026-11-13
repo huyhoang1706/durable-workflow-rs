@@ -1,0 +1,8 @@
+load("@crates//durable-otel:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("//bazel:rust.bzl", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    crate_data = crate_data,
+)

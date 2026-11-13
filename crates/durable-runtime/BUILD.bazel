@@ -1,0 +1,19 @@
+load("@crates//durable-runtime:data.bzl", "aliases", "all_crate_deps", "crate_data")
+load("//bazel:rust.bzl", "CORPUS_DATA", "durable_rust_crate")
+
+durable_rust_crate(
+    aliases = aliases,
+    all_crate_deps = all_crate_deps,
+    crate_data = crate_data,
+    # Like `cargo test --all-features`: the `ClassifyError` impls, and the
+    # `classify_reqwest` / `classify_sqlx` tests that require them.
+    crate_features = [
+        "reqwest",
+        "sqlx",
+    ],
+    test_data = {"replay_corpus": CORPUS_DATA},
+    deps = [
+        "@crates//reqwest",
+        "@crates//sqlx",
+    ],
+)
