@@ -1,6 +1,6 @@
 # Backlog
 
-Deferred work, grouped by area. Each entry says where it came from: [iter1](plans/iter1.md) or [iter2](plans/iter2.md). Iteration 3 (language SDKs) is still in progress; its open items are in [its plan](plans/iter3-sansio-core.md).
+Deferred work, grouped by area. Each entry says where it came from: [iter1](plans/iter1.md), [iter2](plans/iter2.md) or [iter3](plans/iter3-sansio-core.md).
 
 ## Observability
 
@@ -40,15 +40,6 @@ These come from iter1.
 - Retention cleanup for finished runs and their events.
 - Dashboard UI.
 
-## Engine
-
-- **Fan-out is quadratic in the number of steps in flight**, from [iter3](plans/iter3-sansio-core.md) (S4
-  measurements). One run with n parallel steps costs O(n²) in total: 117 µs per step at n = 250, 1686 µs at
-  n = 4000, in Rust and TypeScript alike. Each step completion is one turn of `run_loop` in
-  `crates/durable-runtime/src/engine.rs` (`Wake::Done` handles a single `StepDone`), and every turn recomputes the
-  frontier and walks it in `reap`, `decide` and `build_commit`. Drain every completion that is ready in one turn
-  (one commit for all of them), and keep the frontier incremental, or index it by key.
-
 ## TypeScript binding
 
 From [iter3](plans/iter3-sansio-core.md), S4.
@@ -58,6 +49,19 @@ From [iter3](plans/iter3-sansio-core.md), S4.
   `typescript-v0.1.0`.
 - **More targets:** `linux-x64-musl` / `linux-arm64-musl` (Alpine), and `win32-arm64-msvc`.
 - **A README for the npm package.**
+
+## Python binding
+
+From [iter3](plans/iter3-sansio-core.md), where it was phase P4. On hold for now.
+
+- **`bindings/python`** (PyO3 + maturin), with the same surface as the TypeScript binding: an embedded `Worker` and
+  `Client`, `workflow()`, `ctx.step/sleep/wait_for_signal/wait_for_event/create_hook`, and Postgres/Redis/memory
+  backends selected by URL. Workflow bodies run on a dedicated asyncio loop; sync `def` steps run in a thread pool
+  (see "How a TS workflow maps onto it" in the plan).
+- **Done when:** like P3, a Python onboarding example passes the replay conformance corpus and a crash/resume chaos
+  test.
+- The host contract it builds on (`HostWorkflow` / `HostExecution`, P3a) and the corpus (P2) are already in place,
+  so no engine change is expected.
 
 ## Test suite
 

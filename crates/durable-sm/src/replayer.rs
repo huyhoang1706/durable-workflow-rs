@@ -207,6 +207,15 @@ impl Pending {
     }
 }
 
+/// A command whose frontier entry changed, from [`Replayer::take_frontier_changes`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrontierChange {
+    pub handle: Handle,
+    pub key: String,
+    /// Its entry now, or `None` if it left the frontier (resolved or released).
+    pub pending: Option<Pending>,
+}
+
 /// What history has told us about a command so far.
 #[derive(Debug, Default)]
 struct Progress {
@@ -230,6 +239,55 @@ struct Cmd {
     released: bool,
     /// Issued under a key another command already holds; never resolves.
     rejected: bool,
+    /// Listed in `Replayer::changed`.
+    changed: bool,
+}
+
+impl Cmd {
+    fn is_open(&self) -> bool {
+        self.resolved.is_none() && !self.released && !self.rejected
+    }
+
+    fn pending(&self) -> Pending {
+        let key = self.key.clone();
+        let p = &self.progress;
+        match &self.command {
+            Command::Step { policy, timeout } => Pending::Step {
+                key,
+                attempts: p.attempts,
+                retry_at: p.retry_at,
+                policy: *policy,
+                timeout: *timeout,
+            },
+            Command::Sleep { dur } => Pending::Sleep {
+                key,
+                dur: *dur,
+                fire_at: p.fire_at,
+            },
+            Command::Wait {
+                kind,
+                name,
+                filter,
+                timeout,
+            } => Pending::Wait {
+                key,
+                kind: *kind,
+                name: name.clone(),
+                filter: filter.clone(),
+                timeout: *timeout,
+                started: p.started,
+                timeout_at: p.timeout_at,
+            },
+            Command::Hook { token } => Pending::Hook {
+                key,
+                token: token.clone(),
+            },
+            Command::HookDispose { token } => Pending::HookDispose {
+                key,
+                token: token.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -245,6 +303,9 @@ pub struct Replayer {
     /// Indexed by `Handle`; issue order is frontier order.
     cmds: Vec<Cmd>,
     by_key: HashMap<String, Handle>,
+    /// Commands whose frontier entry changed since the last
+    /// [`Self::take_frontier_changes`], each listed once.
+    changed: Vec<Handle>,
     occurrences: HashMap<String, u32>,
     resolved: Vec<(Handle, Resolution)>,
     now: DateTime<Utc>,
@@ -271,6 +332,7 @@ impl Replayer {
             need_run: true,
             cmds: Vec::new(),
             by_key: HashMap::new(),
+            changed: Vec::new(),
             occurrences: HashMap::new(),
             resolved: Vec::new(),
             now: DateTime::<Utc>::MIN_UTC,
@@ -383,7 +445,12 @@ impl Replayer {
             resolved: None,
             released: false,
             rejected,
+            changed: false,
         });
+        // A rejected command never enters the frontier.
+        if !rejected {
+            self.mark_changed(handle);
+        }
         handle
     }
 
@@ -401,8 +468,12 @@ impl Replayer {
         let Some(c) = self.cmds.get_mut(h.0 as usize) else {
             return;
         };
+        let was_open = c.is_open();
         c.released = true;
         let key = c.key.clone();
+        if was_open {
+            self.mark_changed(h);
+        }
         self.trace(|| TraceOp::Release { key });
     }
 
@@ -505,6 +576,7 @@ impl Replayer {
                  issue it (was a step removed or renamed?)"
             )
         })?;
+        self.mark_changed(h);
         let cmd = &mut self.cmds[h.0 as usize];
         let mismatch = |want: &str, cmd: &Cmd| {
             format!(
@@ -592,48 +664,41 @@ impl Replayer {
     pub fn frontier(&self) -> Vec<Pending> {
         self.cmds
             .iter()
-            .filter(|c| c.resolved.is_none() && !c.released && !c.rejected)
-            .map(|c| {
-                let key = c.key.clone();
-                let p = &c.progress;
-                match &c.command {
-                    Command::Step { policy, timeout } => Pending::Step {
-                        key,
-                        attempts: p.attempts,
-                        retry_at: p.retry_at,
-                        policy: *policy,
-                        timeout: *timeout,
-                    },
-                    Command::Sleep { dur } => Pending::Sleep {
-                        key,
-                        dur: *dur,
-                        fire_at: p.fire_at,
-                    },
-                    Command::Wait {
-                        kind,
-                        name,
-                        filter,
-                        timeout,
-                    } => Pending::Wait {
-                        key,
-                        kind: *kind,
-                        name: name.clone(),
-                        filter: filter.clone(),
-                        timeout: *timeout,
-                        started: p.started,
-                        timeout_at: p.timeout_at,
-                    },
-                    Command::Hook { token } => Pending::Hook {
-                        key,
-                        token: token.clone(),
-                    },
-                    Command::HookDispose { token } => Pending::HookDispose {
-                        key,
-                        token: token.clone(),
-                    },
+            .filter(|c| c.is_open())
+            .map(Cmd::pending)
+            .collect()
+    }
+
+    /// Commands whose frontier entry may have changed since the last call:
+    /// issued, moved on by history (a retry, a timer scheduled, ...),
+    /// resolved or released. Each is listed once, with its entry as it is
+    /// now. On a new replayer the first call lists every command issued so
+    /// far.
+    ///
+    /// The engine keeps its own copy of the frontier current with this, so
+    /// a turn costs what changed instead of everything that is open.
+    pub fn take_frontier_changes(&mut self) -> Vec<FrontierChange> {
+        let changed = std::mem::take(&mut self.changed);
+        changed
+            .into_iter()
+            .map(|h| {
+                let c = &mut self.cmds[h.0 as usize];
+                c.changed = false;
+                FrontierChange {
+                    handle: h,
+                    key: c.key.clone(),
+                    pending: c.is_open().then(|| c.pending()),
                 }
             })
             .collect()
+    }
+
+    fn mark_changed(&mut self, h: Handle) {
+        let c = &mut self.cmds[h.0 as usize];
+        if !c.changed {
+            c.changed = true;
+            self.changed.push(h);
+        }
     }
 
     // ---- deterministic environment ----------------------------------------
@@ -759,6 +824,45 @@ mod tests {
         assert!(r.fault().unwrap().contains("share the key `k`"));
         assert_eq!(r.frontier().len(), 1, "the rejected command is not pending");
         assert_eq!(r.abort(), Some(Abort::Fault(r.fault().unwrap().into())));
+    }
+
+    #[test]
+    fn frontier_changes_list_each_changed_command_once_with_its_entry_now() {
+        let mut r = Replayer::new(RunId::nil(), vec![]);
+        assert_eq!(r.advance(), Advance::RunCode);
+        let a = r.issue("a".into(), step());
+        let b = r.issue("b".into(), step());
+        let n = r.issue("nap".into(), sleep());
+        r.issue("nap".into(), sleep()); // rejected: never in the frontier
+        let changes = r.take_frontier_changes();
+        let keys: Vec<_> = changes.iter().map(|c| (c.handle, c.key.as_str())).collect();
+        assert_eq!(keys, [(a, "a"), (b, "b"), (n, "nap")]);
+        assert!(changes.iter().all(|c| c.pending.is_some()));
+        assert!(r.take_frontier_changes().is_empty(), "drained");
+
+        // A retry moves `a` on, `b` resolves, the sleep is released.
+        r.push_live(log(vec![
+            EventKind::StepFailed {
+                key: "a".into(),
+                attempt: 1,
+                error: "boom".into(),
+                retryable: true,
+                retry_at: Some(at(5)),
+            },
+            ok("b", json!(2)),
+        ]));
+        while r.advance() == Advance::RunCode {}
+        r.release(n);
+        r.release(n); // already gone: not listed again
+        let changes = r.take_frontier_changes();
+        assert_eq!(changes.len(), 3);
+        assert!(matches!(
+            &changes[0].pending,
+            Some(Pending::Step { attempts: 1, retry_at: Some(t), .. }) if *t == at(5)
+        ));
+        assert_eq!((changes[1].handle, &changes[1].pending), (b, &None));
+        assert_eq!((changes[2].handle, &changes[2].pending), (n, &None));
+        assert!(r.take_frontier_changes().is_empty());
     }
 
     #[test]

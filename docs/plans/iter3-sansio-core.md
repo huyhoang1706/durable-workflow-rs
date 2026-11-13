@@ -1,9 +1,10 @@
 # Iteration 3: a sans-IO core for TS/JS and Python SDKs
 
-> Status: P0–P2 and P3a are done. P3 (the TypeScript binding, `bindings/typescript`) is designed below; slices S1
-> and S2 are built, S3 is next. The design sections below are the original sketch. The
-> "as built" sections record where the code differs. `durable-core` was renamed `durable-spi` after P1 (#9); the
-> as-built notes keep the name used at the time.
+> Status: P0–P2, P3a and P3 are done. The TypeScript binding (`bindings/typescript`, slices S1–S4) is built and
+> meets the P3 "done when" row; its first npm release is waiting on the owner (see the backlog). P4, the Python
+> binding, is on hold and moved to the [backlog](../BACKLOG.md#python-binding). The design sections below are the
+> original sketch. The "as built" sections record where the code differs. `durable-core` was renamed `durable-spi`
+> after P1 (#9); the as-built notes keep the name used at the time.
 
 ## Context
 
@@ -282,8 +283,8 @@ or, for sync `def` steps, in a thread pool.
 | P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 ✅ | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
 | P3a ✅ | **Host abstraction** (see "P3a: hosting workflows written in other languages"): the engine runs any workflow through `HostWorkflow` / `HostExecution`, and Rust becomes the first host. | Suite and corpus pass unchanged. A scripted host with no Rust futures runs corpus workflows end to end on the real engine. |
-| P3 | `bindings/typescript` (napi-rs), see "P3: the TypeScript binding": embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/typescript-onboarding` passes the conformance corpus and a crash/resume chaos test. |
-| P4 | `bindings/python` (PyO3 + maturin), same surface. | Same as P3. |
+| P3 ✅ (not published) | `bindings/typescript` (napi-rs), see "P3: the TypeScript binding": embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/typescript-onboarding` passes the conformance corpus and a crash/resume chaos test. |
+| P4 (on hold) | `bindings/python` (PyO3 + maturin), same surface. Moved to the [backlog](../BACKLOG.md#python-binding). | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
 
 ## P0 as built
@@ -904,9 +905,41 @@ What this says:
   process.
 - **The fan-out cost is the engine's, not the binding's.** Per-step cost grows with the number of steps in flight,
   in Rust too (117 µs/step at 250, 1686 µs/step at 4000): the run loop handles one `StepDone` per turn and walks the
-  whole frontier each turn. See the backlog.
+  whole frontier each turn. Fixed after S4, see "Fan-out fix".
 
 **Not done:** publishing (needs the owner), musl and other targets, and a README for the npm page.
+
+## Fan-out fix (after S4)
+
+The S4 numbers showed that one run with n parallel steps cost O(n²) in the engine. Three changes, all in the
+shell and `durable-sm`, no change to the corpus or to a host:
+
+- **One turn per batch of results.** `run_loop` drains every `StepDone` that is ready (at most 1024) and records
+  them in one commit. Replay still delivers one outcome at a time, so a race picks the same winner live and on
+  replay. What changes is that the losers of a `select!` whose attempts finish in the same batch now reach history
+  too, where before the engine dropped them once the winner's commit released them.
+- **An incremental frontier.** `Replayer::take_frontier_changes` lists the commands whose frontier entry changed
+  (issued, moved on by history, resolved, released). The engine keeps a copy of the frontier minus the steps that
+  have a running attempt (`Idle` in `engine.rs`), and passes `decide` only that, with the attempts it left out
+  counted in `DecideInput::running_elsewhere`. A turn costs what changed, not everything that is open. A rebuild
+  starts the copy over from the new replayer and aborts attempts it no longer lists as open.
+- **A throttled in-flight overlay.** Every turn used to rewrite the cache's list of running attempts, which was
+  the biggest cost once turns were batched. It is now written at most every 100 ms, with a timed wake for a change
+  held back.
+
+Memory backend, Rust (`cargo run --release -p durable-workflow --example tiny_steps`), 4 vCPUs. The last rows are a
+new scenario of the example: step `i` sleeps `i × 250 µs`, so results arrive one by one and the floor is 250 µs/step.
+
+| Scenario | Before | After |
+|---|---|---|
+| 1 run × 2000 sequential steps | 37 µs/step | 40 µs/step |
+| 500 runs × 20 steps, 64 at once | 11 µs/step | 10 µs/step |
+| 1 run, 250 / 1000 / 4000 parallel steps | 118 / 360 / 1593 µs/step | 19 / 24 / 22 µs/step |
+| 1 run, 4000 parallel steps 250 µs apart | 1587 µs/step, 12.8 s CPU | 270 µs/step, 0.35 s CPU |
+
+The TypeScript binding gains the same way (`npm run bench`, release addon, Node 22.23): `ctx.map` over 2000 items
+went from 1187 to 93 µs/step, now in line with its other scenarios (195 µs/step sequential, 76 µs/step for 500 runs
+at once), whose numbers are unchanged within noise.
 
 ## Open questions
 

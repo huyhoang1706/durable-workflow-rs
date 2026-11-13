@@ -5,7 +5,7 @@
 //! steps, wait in-process or suspend. The engine shell performs the decision
 //! (commits, tasks, timers) and feeds the results back into the replayer.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -66,11 +66,15 @@ pub struct StepLaunch {
 
 /// A snapshot of one execution, taken at the top of the engine loop.
 pub struct DecideInput<'a> {
+    /// The replayer's frontier. The engine may leave out steps whose attempt
+    /// is running and count them in `running_elsewhere` instead.
     pub frontier: &'a [Pending],
     pub now: DateTime<Utc>,
     pub deadline_at: Option<DateTime<Utc>>,
     /// Whether a step attempt is in flight for this key.
     pub running: &'a dyn Fn(&str) -> bool,
+    /// Step attempts in flight whose commands are not in `frontier`.
+    pub running_elsewhere: usize,
     /// Whether a commit already synced the inbox for open waits.
     pub inbox_checked: bool,
     /// Wakes closer than this are waited out in-process instead of suspending.
@@ -110,13 +114,14 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
         now,
         deadline_at,
         running,
+        running_elsewhere,
         inbox_checked,
         inline_threshold,
     } = *input;
     if deadline_at.is_some_and(|d| now >= d) {
         return Decision::DeadlineExceeded;
     }
-    if frontier.is_empty() {
+    if frontier.is_empty() && running_elsewhere == 0 {
         return Decision::Fault {
             message: "workflow awaited a non-durable future (only ctx.* calls may be awaited)"
                 .into(),
@@ -171,9 +176,11 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
         .collect();
 
     // 4. Wait here, or suspend.
-    let busy = |key: &str| running(key) || launch.iter().any(|l| l.key == key);
+    let launching: HashSet<&str> = launch.iter().map(|l| l.key.as_str()).collect();
+    let busy = |key: &str| running(key) || launching.contains(key);
     let wake_at = next_wake(frontier, deadline_at, &busy);
-    let any_running = !launch.is_empty() || frontier.iter().any(|p| busy(p.key()));
+    let any_running =
+        !launch.is_empty() || running_elsewhere > 0 || frontier.iter().any(|p| busy(p.key()));
     let inline = wake_at.is_some_and(|t| (t - now).to_std().is_ok_and(|d| d <= inline_threshold));
     if !any_running && !inline {
         return Decision::Suspend { wake_at };
@@ -355,6 +362,7 @@ mod tests {
             now: t(0),
             deadline_at: None,
             running: &|k| running.contains(&k),
+            running_elsewhere: 0,
             inbox_checked,
             inline_threshold: Duration::from_secs(5),
         })
@@ -367,10 +375,53 @@ mod tests {
             now: t(10),
             deadline_at: Some(t(10)),
             running: &|_| false,
+            running_elsewhere: 0,
             inbox_checked: true,
             inline_threshold: Duration::ZERO,
         });
         assert_eq!(d, Decision::DeadlineExceeded);
+    }
+
+    #[test]
+    fn steps_running_outside_the_frontier_keep_the_run_here() {
+        let d = |frontier: &[Pending], running_elsewhere| {
+            decide(&DecideInput {
+                frontier,
+                now: t(0),
+                deadline_at: None,
+                running: &|_| false,
+                running_elsewhere,
+                inbox_checked: true,
+                inline_threshold: Duration::from_secs(5),
+            })
+        };
+        // Only running steps are open: wait for them, do not fault.
+        assert_eq!(
+            d(&[], 3),
+            Decision::Run {
+                launch: vec![],
+                wake_at: None
+            }
+        );
+        // A far-off timer alone would suspend; running steps keep the run here.
+        let far = [Pending::Sleep {
+            key: "nap".into(),
+            dur: Duration::from_secs(3600),
+            fire_at: Some(t(3600)),
+        }];
+        assert_eq!(
+            d(&far, 0),
+            Decision::Suspend {
+                wake_at: Some(t(3600))
+            }
+        );
+        assert_eq!(
+            d(&far, 1),
+            Decision::Run {
+                launch: vec![],
+                wake_at: Some(t(3600))
+            }
+        );
     }
 
     #[test]
