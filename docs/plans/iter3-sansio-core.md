@@ -937,6 +937,10 @@ new scenario of the example: step `i` sleeps `i × 250 µs`, so results arrive o
 | 1 run, 250 / 1000 / 4000 parallel steps | 118 / 360 / 1593 µs/step | 19 / 24 / 22 µs/step |
 | 1 run, 4000 parallel steps 250 µs apart | 1587 µs/step, 12.8 s CPU | 270 µs/step, 0.35 s CPU |
 
+The TypeScript binding gains the same way (`npm run bench`, release addon, Node 22.23): `ctx.map` over 2000 items
+went from 1187 to 93 µs/step, now in line with its other scenarios (195 µs/step sequential, 76 µs/step for 500 runs
+at once), whose numbers are unchanged within noise.
+
 ## Open questions
 
 1. **Mixed-language workers**: can one worker host Rust and TS workflows at once? Nothing prevents it,
