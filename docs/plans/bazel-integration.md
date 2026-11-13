@@ -471,7 +471,12 @@ GitHub's cache holds 10 GB per repository and a PR can read the default branch's
 | Python binding | Start it inside Bazel (`rules_python`, `rules_uv`, PyO3 cdylib built the same way as the addon) |
 | `gazelle` for BUILD files | The number of TypeScript packages grows past a handful |
 
-#### Remote cache: BuildBuddy (confirmed 2026-11-12)
+#### Remote cache: BuildBuddy (confirmed 2026-11-12, configured 2026-11-13)
+
+> Done: `--config=buildbuddy` / `--config=buildbuddy-readonly` in `.bazelrc`, the two-key CI setup, the disk
+> cache only when there is no key, and the weekly `--nocache_test_results` run. See `../bazel.md`. Differences
+> from the sketch below: `--remote_download_minimal` was left out (Bazel's default, `toplevel`, is enough),
+> and `--announce_rc` was dropped from `:ci` because it printed the key from `user.bazelrc` into the log.
 
 The hosted service, cache and build-event UI only; no remote execution. The flags are the ones codex uses for its
 generic BuildBuddy config:

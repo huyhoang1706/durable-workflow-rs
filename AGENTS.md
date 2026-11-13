@@ -12,7 +12,7 @@ DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus   # r
 docker compose up -d                      # postgres:17 + redis:7 for the examples
 bazel test //... --test_tag_filters=-docker   # optional: the Rust workspace through Bazel (docs/bazel.md); drop the filter with Docker running
 bazel test //crates/durable-runtime:engine_async_test   # one test file under Bazel (`tests/<name>.rs` -> `:<name>_test`)
-bazel build --config=clippy //...         # clippy -D warnings under Bazel
+bazel build --config=clippy //...         # clippy -D warnings under Bazel; add --config=buildbuddy-readonly for the shared cache (key in user.bazelrc, docs/bazel.md)
 cd bindings/typescript && npm ci && npm run build:native && npm run typecheck && npm test && npm run build   # TypeScript binding (Node >= 22.18): TS 7, Vitest, tsdown
 cd bindings/typescript && npm run build:native:release && npm run bench   # tiny-step throughput; Rust baseline: cargo run --release -p durable-workflow --example tiny_steps
 cd bindings/typescript && npm run test:servers   # also the binding's Postgres/Redis cases, on throwaway containers (npm test skips them)
