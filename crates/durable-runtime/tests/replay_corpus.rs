@@ -692,8 +692,8 @@ fn kind_name(k: &EventKind) -> String {
 /// A host with no Rust futures and no `Driver`: it replays a corpus trace,
 /// making the recorded replayer calls at each activation, and answers step
 /// launches with the outcomes in the case's history. The engine cannot tell
-/// it from a real binding, so this checks that the host abstraction carries
-/// everything a binding needs, live phase included.
+/// it from a real SDK, so this checks that the host abstraction carries
+/// everything an SDK needs, live phase included.
 mod scripted {
     use std::{collections::HashMap, sync::Arc};
 

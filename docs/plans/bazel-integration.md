@@ -31,7 +31,7 @@ What running it showed, where it differs from the sketch below:
 ## Context
 
 The repository is a polyglot monorepo: 13 Rust crates (`crates/*`, `plugins/*`, three Rust examples), a Node-API
-addon with a TypeScript SDK (`bindings/typescript`), and an npm example (`examples/typescript-onboarding`). A Python
+addon with a TypeScript SDK (`durable-workflow-ts`), and an npm example (`examples/typescript-onboarding`). A Python
 binding is planned (iteration 3).
 
 CI today is one job that runs `./ci.sh` top to bottom:
@@ -47,7 +47,7 @@ Phase 0 collects a real one.
 
 What makes it slow, and what will get worse as the repo grows:
 
-1. **Nothing is skipped.** A change to `bindings/typescript/ts/*.ts` still runs clippy and every Rust test,
+1. **Nothing is skipped.** A change to `durable-workflow-ts/ts/*.ts` still runs clippy and every Rust test,
    including the Postgres/Redis container suites. A change to `plugins/durable-otel` still runs the TypeScript suite.
 2. **It is serial.** fmt, clippy, tests, two `cargo tree` checks, a second `cargo build`, then two npm projects.
 3. **The cache is coarse.** `rust-cache` restores `target/` as one blob keyed on `Cargo.lock`. It saves
@@ -128,7 +128,7 @@ Recommendations first; the open ones are listed again at the end.
 1. **pnpm workspace instead of two npm projects (confirmed 2026-11-12).** `rules_js` models `node_modules` from a pnpm lockfile. It can
    import a `package-lock.json` on the fly (`npm_package_lock`), but then Bazel resolves with pnpm while developers
    resolve with npm, and the two trees can differ. One `pnpm-workspace.yaml` at the root with both packages, one
-   `pnpm-lock.yaml`, and the example's `"@durable/typescript": "file:../../bindings/typescript"` becomes
+   `pnpm-lock.yaml`, and the example's `"@durable/typescript": "file:../../durable-workflow-ts"` becomes
    `workspace:*`. This changes the documented commands from `npm` to `pnpm`.
 2. **`rules_rs` 0.2.x (confirmed 2026-11-12), not plain `rules_rust`.** It is what openai/codex runs a much larger
    Cargo workspace on. We follow its paved path. The trade-off accepted: it is a 0.x ruleset with deprecations
@@ -155,7 +155,7 @@ Recommendations first; the open ones are listed again at the end.
 ```
 .bazelversion                 9.3.2
 .bazelrc                      shared flags, :ci and :clippy configs
-.bazelignore                  target, node_modules, bindings/typescript/node_modules, ...
+.bazelignore                  target, node_modules, durable-workflow-ts/node_modules, ...
 MODULE.bazel, MODULE.bazel.lock
 BUILD.bazel                   npm_link_all_packages, exports Cargo.toml / Cargo.lock
 pnpm-workspace.yaml, pnpm-lock.yaml, package.json (root, private)
@@ -166,7 +166,7 @@ bazel/
 crates/*/BUILD.bazel          one macro call each
 plugins/*/BUILD.bazel
 examples/*/BUILD.bazel
-bindings/typescript/BUILD.bazel   addon (cdylib -> .node), typecheck, vitest, tsdown, npm_package
+durable-workflow-ts/BUILD.bazel   addon (cdylib -> .node), typecheck, vitest, tsdown, npm_package
 ```
 
 ### `MODULE.bazel` (sketch)
@@ -292,11 +292,11 @@ Found by grepping the workspace for things that assume Cargo:
 | `crates/durable-testkit/src/corpus.rs:64` | `env!("CARGO_MANIFEST_DIR")` baked in at compile time locates the corpus | Read `DURABLE_CORPUS_DIR` at run time first, fall back to the compile-time path. Bazel sets the variable and lists `corpus/**` as `data`. Rewriting the corpus (`DURABLE_UPDATE_CORPUS=1`) stays a Cargo command |
 | `crates/durable-cli/tests/smoke.rs:20` | `env!("CARGO_BIN_EXE_durable")` | None in the source. The macro sets it via `rustc_env` |
 | `plugins/durable-postgres/src/migrate.rs`, `plugins/durable-redis/src/{queue,services,streams}.rs`, `examples/llm-streaming/src/main.rs` | `include_str!` of `.sql`, `.lua`, `.html` | None in the source. List them as `compile_data` (a glob per crate) |
-| `bindings/typescript/build.rs` | `napi_build::setup()` emits linker flags | `cargo_build_script` target; its flags reach the `rust_shared_library` **(verify on macOS)** |
-| `bindings/typescript/ts/native.ts` | Looks for `durable.<platform>.node` next to `ts/` | None. It already honours `DURABLE_NATIVE`, so Bazel tests point that at the built addon |
-| `bindings/typescript/test/corpus.ts:24` | Relative path `../../../crates/durable-testkit/corpus/` | Works if the corpus is in the test's `data` and the layout is preserved in runfiles **(verify)**; otherwise read the same `DURABLE_CORPUS_DIR` |
-| `examples/typescript-onboarding/package.json` | `file:../../bindings/typescript` | `workspace:*` |
-| `crates/durable-workflow/tests/compile_fail.rs` | `trybuild` runs `cargo` | Tagged `manual` in Bazel, runs in the Cargo job |
+| `durable-workflow-ts/build.rs` | `napi_build::setup()` emits linker flags | `cargo_build_script` target; its flags reach the `rust_shared_library` **(verify on macOS)** |
+| `durable-workflow-ts/ts/native.ts` | Looks for `durable.<platform>.node` next to `ts/` | None. It already honours `DURABLE_NATIVE`, so Bazel tests point that at the built addon |
+| `durable-workflow-ts/test/corpus.ts:24` | Relative path `../../../crates/durable-testkit/corpus/` | Works if the corpus is in the test's `data` and the layout is preserved in runfiles **(verify)**; otherwise read the same `DURABLE_CORPUS_DIR` |
+| `examples/typescript-onboarding/package.json` | `file:../../durable-workflow-ts` | `workspace:*` |
+| `durable-workflow-rs/tests/compile_fail.rs` | `trybuild` runs `cargo` | Tagged `manual` in Bazel, runs in the Cargo job |
 
 ### Features
 
@@ -306,13 +306,13 @@ behave like today. Three places need care:
 
 - **`durable-workflow` standalone check.** Today: `cargo tree --features standalone | grep opentelemetry` must be
   empty, plus a separate `cargo build --features standalone`. In Bazel: a second library target
-  `//crates/durable-workflow:standalone` with only `postgres`, `observable` and `standalone` enabled and an
+  `//durable-workflow-rs:standalone` with only `postgres`, `observable` and `standalone` enabled and an
   explicit dependency list, and a test in `//bazel/checks` asserting that
-  `deps(//crates/durable-workflow:standalone)` contains no `opentelemetry*` crate. Building the target replaces the
+  `deps(//durable-workflow-rs:standalone)` contains no `opentelemetry*` crate. Building the target replaces the
   extra `cargo build`.
 - **`durable-sm` purity check.** Same mechanism: `deps(//crates/durable-sm)` must not contain `tokio`, `futures*`
   or `async-trait`. This becomes a property of the graph, checked without compiling anything.
-- **`bindings/typescript`** depends on `durable-workflow` with `default-features = false` and three features. Under
+- **`durable-workflow-ts`** depends on `durable-workflow` with `default-features = false` and three features. Under
   Bazel it links the all-features target, so the addon built by Bazel carries more code than the released one.
   That is fine for tests. It is one more reason the release workflow stays on Cargo.
 
@@ -321,7 +321,7 @@ Whether `all_crate_deps` includes optional dependencies whose feature is off nee
 
 ### Tests that need Docker
 
-`plugins/durable-postgres`, `plugins/durable-redis`, `crates/durable-cli` (`smoke`) and `crates/durable-workflow`
+`plugins/durable-postgres`, `plugins/durable-redis`, `crates/durable-cli` (`smoke`) and `durable-workflow-rs`
 (`chaos`, `standalone`, and whatever else uses `tests/common`) start containers through testcontainers. The
 TypeScript `backend`, `chaos` and example tests want `DURABLE_TEST_DATABASE_URL` / `_REDIS_URL`.
 
@@ -351,7 +351,7 @@ Each phase ends in a mergeable PR. `./ci.sh` keeps working until Phase 4.
   project. Record cold (no cache) and warm numbers here.
 
 Done when: the table at the top of this file has real numbers, and a target is written down (suggested: a change
-confined to `bindings/typescript/ts` or to one plugin finishes in under 2 minutes; a change to `durable-sm` is no
+confined to `durable-workflow-ts/ts` or to one plugin finishes in under 2 minutes; a change to `durable-sm` is no
 slower than today).
 
 ### Phase 1: Rust builds (1 to 2 days)
@@ -406,7 +406,7 @@ against, because a glob that matches nothing fails silently; set `allow_empty = 
 - Root `package.json` (private), `pnpm-workspace.yaml`, `pnpm-lock.yaml` generated with `pnpm import` from the two
   `package-lock.json` files so versions do not move; delete the npm lockfiles; update README and AGENTS.md
   commands.
-- `bindings/typescript/BUILD.bazel`:
+- `durable-workflow-ts/BUILD.bazel`:
   - `copy_file` from the `rust_shared_library` output to `durable.<platform>.node`. The platform suffix is a
     `select()` over OS and CPU, matching `napi build --platform`.
   - `ts_project(name = "typecheck", no_emit = True, tsc = ":tsc")` with the TS 7 binary, as perplexity-node does.
@@ -425,7 +425,7 @@ first, before the rest of the phase. If it does not work cleanly within half a d
 that runs the pnpm-installed Vitest unsandboxed with the Bazel-built addon: it loses hermeticity but keeps the
 caching, which is what we are after.
 
-Done when: `bazel test //bindings/... //examples/typescript-onboarding/...` passes, and editing a `.ts` file
+Done when: `bazel test //durable-workflow-ts/... //examples/typescript-onboarding/...` passes, and editing a `.ts` file
 recompiles no Rust.
 
 ### Phase 4: CI (1 day, then a soak)

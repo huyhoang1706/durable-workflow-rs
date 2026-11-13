@@ -9,7 +9,7 @@
 //! Two checks use it:
 //!
 //! - **Replayer conformance**: [`play`] drives a bare [`Replayer`] with the
-//!   host calls from the trace and checks every answer. A binding runs the
+//!   host calls from the trace and checks every answer. An SDK runs the
 //!   same check through its FFI layer.
 //! - **SDK conformance**: the SDK's version of the case's workflow replays
 //!   the history with recording on, and must produce the same trace,

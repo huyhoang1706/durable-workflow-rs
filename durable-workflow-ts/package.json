@@ -6,7 +6,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/huyhoang1706/durable-workflow-rs.git",
-    "directory": "bindings/typescript"
+    "directory": "durable-workflow-ts"
   },
   "type": "module",
   "main": "./dist/index.mjs",

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "plugins/*", "examples/*", "bindings/typescript"]
+members = ["durable-workflow-rs", "durable-workflow-ts", "crates/*", "plugins/*", "examples/*"]
 # A TypeScript example (npm), not a crate.
 exclude = ["examples/typescript-onboarding"]
 

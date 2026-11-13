@@ -260,7 +260,7 @@ export class Worker {
   /**
    * Replay a stored history through a registered workflow, the way the engine
    * does, with recording on. No store and no step execution. The conformance
-   * tests check the binding with it.
+   * tests check the SDK with it.
    */
   async replay(workflow: Workflow<any, any> | string, runId: string, input: unknown, history: Event[]): Promise<ReplayOutcome> {
     const name = typeof workflow === "string" ? workflow : workflow.name;

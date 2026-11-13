@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 description = "Sans-IO replay state machine shared by every durable-workflow SDK"
 
-# No tokio, no futures, no IO: language bindings (napi, PyO3, WASM) embed this crate.
+# No tokio, no futures, no IO: every SDK (napi, PyO3, WASM) embeds this crate.
 [dependencies]
 chrono.workspace = true
 rand_chacha.workspace = true

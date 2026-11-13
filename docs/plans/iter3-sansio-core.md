@@ -1,8 +1,8 @@
 # Iteration 3: a sans-IO core for TS/JS and Python SDKs
 
-> Status: P0–P2, P3a and P3 are done. The TypeScript binding (`bindings/typescript`, slices S1–S4) is built and
+> Status: P0–P2, P3a and P3 are done. The TypeScript binding (`durable-workflow-ts`, slices S1–S4) is built and
 > meets the P3 "done when" row; its first npm release is waiting on the owner (see the backlog). P4, the Python
-> binding, is on hold and moved to the [backlog](../BACKLOG.md#python-binding). The design sections below are the
+> binding, is on hold and moved to the [backlog](../BACKLOG.md#python-sdk). The design sections below are the
 > original sketch. The "as built" sections record where the code differs. `durable-core` was renamed `durable-spi`
 > after P1 (#9); the as-built notes keep the name used at the time.
 
@@ -283,8 +283,8 @@ or, for sync `def` steps, in a thread pool.
 | P1 ✅ | Lift `decide` and `step_outcome` out of `engine.rs`. `run_loop` matches on `Decision`. | Suite passes. Decider unit tests cover each arm without a backend. |
 | P2 ✅ | **Replay conformance corpus**: record histories plus the expected command sequences as JSON in `durable-testkit`, generated from the Rust workflows in the test suite. | Every binding must pass this corpus. It is the cross-language contract. |
 | P3a ✅ | **Host abstraction** (see "P3a: hosting workflows written in other languages"): the engine runs any workflow through `HostWorkflow` / `HostExecution`, and Rust becomes the first host. | Suite and corpus pass unchanged. A scripted host with no Rust futures runs corpus workflows end to end on the real engine. |
-| P3 ✅ (not published) | `bindings/typescript` (napi-rs), see "P3: the TypeScript binding": embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/typescript-onboarding` passes the conformance corpus and a crash/resume chaos test. |
-| P4 (on hold) | `bindings/python` (PyO3 + maturin), same surface. Moved to the [backlog](../BACKLOG.md#python-binding). | Same as P3. |
+| P3 ✅ (not published) | `durable-workflow-ts` (napi-rs), see "P3: the TypeScript binding": embedded `Worker` + `Client`, `workflow()`, `ctx.step/sleep/waitForSignal/waitForEvent/createHook`, Postgres/Redis/memory backends selected by URL. | An `examples/typescript-onboarding` passes the conformance corpus and a crash/resume chaos test. |
+| P4 (on hold) | `durable-workflow-py` (PyO3 + maturin), same surface. Moved to the [backlog](../BACKLOG.md#python-sdk). | Same as P3. |
 | Later | HTTP executor (Inngest-style), using `durable-sm` compiled to WASM in the SDK so serverless functions can replay. | — |
 
 ## P0 as built
@@ -554,14 +554,14 @@ the corpus. The engine no longer knows about `Driver`, `Core` or `WorkflowError`
 
 ## P3: the TypeScript binding (design)
 
-The binding lives in `bindings/typescript`. It is "TypeScript", not "Node", because the authoring surface is the
+The binding lives in `durable-workflow-ts`. It is "TypeScript", not "Node", because the authoring surface is the
 product. Node is the first runtime that loads the native addon; Bun and Deno load Node-API addons too. The design
 follows the P3a sketch for Node; this section settles what the sketch left open.
 
 ### Layout
 
 ```
-bindings/typescript/
+durable-workflow-ts/
   Cargo.toml, build.rs, src/lib.rs   crate `durable-typescript`: a napi-rs cdylib, not published to crates.io
   package.json, tsconfig.json        npm package, ESM only, Node >= 22.18, TypeScript 7
   tsdown.config.ts                   bundles ts/ into dist/index.mjs + dist/index.d.mts
@@ -716,7 +716,7 @@ Three checks, in the order the slices build them:
 
 ## S1 as built
 
-S1 is on `refactor/host-abstraction`, after P3a. `npm test` in `bindings/typescript` runs 51 tests: check 1 on all 22
+S1 is on `refactor/host-abstraction`, after P3a. `npm test` in `durable-workflow-ts` runs 51 tests: check 1 on all 22
 cases, check 2 on TypeScript ports of all 22 (not only a subset), and unit tests of the step side of `Execution`.
 `ci.sh` runs them when `node` is on the path. Where the code differs from the design above:
 
@@ -810,7 +810,7 @@ containers on random host ports, exports the two URLs, runs the command and remo
 in CI. Plain `npm test` still skips the server cases, so it needs no Docker.
 
 **Step 3: `examples/typescript-onboarding`.** It is an npm project, not a crate, so it is excluded from the Cargo
-workspace. It depends on the SDK through `file:../../bindings/typescript` and imports the built package (`dist/`), as
+workspace. It depends on the SDK through `file:../../durable-workflow-ts` and imports the built package (`dist/`), as
 a user would. One process serves an HTTP API on `node:http` and runs an embedded worker; the backend comes from
 `DATABASE_URL` (default `memory://`) and `REDIS_URL`.
 
@@ -829,7 +829,7 @@ a user would. One process serves an HTTP API on `node:http` and runs an embedded
 test kills. Rust's chaos suite kills workers inside one process (`WorkerHandle::abort`). Here a SIGKILL also takes down
 the JavaScript side: pending promises, step bodies and the napi threads.
 
-- `bindings/typescript/test/chaos.test.ts` runs worker processes (`test/chaos/worker.ts`) over two workflows from
+- `durable-workflow-ts/test/chaos.test.ts` runs worker processes (`test/chaos/worker.ts`) over two workflows from
   `test/chaos/workflows.ts`. `chaos.seq` runs three steps, a timer that suspends and a signal. `chaos.map` runs a
   fan-out of three steps whose first attempts fail, then a timer and a signal.
   - **SIGKILL:** 3 processes and 60 runs. The test kills a process every 300 ms (6 kills) and starts a new one in its

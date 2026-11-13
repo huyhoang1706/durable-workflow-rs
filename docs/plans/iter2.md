@@ -191,7 +191,7 @@ pub enum Metric<'a> {
   - `OtelConfig` also accepts programmatic exporters (`.span_exporter(..)`, `.log_exporter(..)`, `.metric_reader(..)`). A future DuckDB or ClickHouse plugin is then just another exporter, with no runtime change.
 - **Tests** use the SDK in-memory exporters (the `testing` feature).
 
-### Local-first observability (`observable`) with no OTel dependency (`crates/durable-workflow/src/observable.rs`)
+### Local-first observability (`observable`) with no OTel dependency (`durable-workflow-rs/src/observable.rs`)
 - This is the **default** experience for local development. Feature `observable` in the facade pulls only `tracing-subscriber` (fmt, json, env-filter) and `tracing-appender` 0.2.
 - **`durable_workflow::observable::init(ObservableConfig::from_env()) -> Result<ObservableGuard>`** installs the global subscriber. Embedded apps that already own a subscriber can call `observable::layers(..)` instead.
 - **Per-signal resolution.** Local sinks are the fallback for every signal OTel does not take over: OTel is off, or that signal has no OTLP configured.
@@ -221,18 +221,18 @@ pub enum Metric<'a> {
   - span JSON goes to an injected writer.
 
 ### Facade and standalone
-- **Facade** [durable-workflow/Cargo.toml](crates/durable-workflow/Cargo.toml):
+- **Facade** [durable-workflow/Cargo.toml](durable-workflow-rs/Cargo.toml):
   - feature `observable` (local-first), enabled by `standalone`;
   - feature `otel` (`dep:durable-otel`, `durable_workflow::otel`) is **opt-in and never on by default**: not in `default`, not in `standalone`. Users add `features = ["standalone", "otel"]`;
   - the `redis` feature's `connect()` now also returns `streams`.
-- **[standalone.rs](crates/durable-workflow/src/standalone.rs).**
+- **[standalone.rs](durable-workflow-rs/src/standalone.rs).**
   - `init_tracing` is replaced by `observable::init`. With zero configuration this gives span JSON on stdout and rotating JSON logs in `./logs`.
   - The log directory is set with **`DURABLE_LOG_DIR`**, read by `ObservableConfig::from_env()` (`Config::from_env()` delegates to it). It is also settable in code with `ObservableConfig::log_dir(..)`.
   - The directory is created if missing. An unwritable directory fails startup with a clear `Error::Config` naming the path and the variable; it does not silently drop logs.
   - The same goes for `DURABLE_LOG_FILE_PREFIX`, `DURABLE_LOG_ROTATION` and `DURABLE_LOG_MAX_FILES`. All four are documented in the README env table and in the standalone-worker example.
   - With `cfg(feature = "otel")`, `observable::init` asks `durable_otel::layers` which signals it takes over, attaches the OTel observer to the backend, and keeps local sinks for the rest.
   - The guard is held until after `worker.shutdown()`, so spans and logs flush.
-  - [connect.rs](crates/durable-workflow/src/connect.rs) wires `RedisStreams` when a Redis URL is configured, with a `DURABLE_STREAM_TTL_SECS` override.
+  - [connect.rs](durable-workflow-rs/src/connect.rs) wires `RedisStreams` when a Redis URL is configured, with a `DURABLE_STREAM_TTL_SECS` override.
 - **[docker-compose.yml](docker-compose.yml):** add `grafana/otel-lgtm`, which bundles a collector, Tempo, Mimir, Loki and Grafana.
 
 ## Examples and docs
@@ -280,7 +280,7 @@ pub enum Metric<'a> {
   - a `tracing::info!` inside a step yields a log record carrying that trace id.
 - **Local observable tests:** the ones listed under the local-first section. CI also runs `cargo build -p durable-workflow --features standalone` and checks that `cargo tree` shows no `opentelemetry` crate.
 - **API:** SSE route tests via `tower::ServiceExt::oneshot`, including `Last-Event-ID` resume and namespace scoping.
-- **Chaos test** ([chaos.rs](crates/durable-workflow/tests/chaos.rs)): add streaming steps. Runs still complete with correct durable outputs despite worker aborts and Redis `FLUSHALL`.
+- **Chaos test** ([chaos.rs](durable-workflow-rs/tests/chaos.rs)): add streaming steps. Runs still complete with correct durable outputs despite worker aborts and Redis `FLUSHALL`.
 - **Manual:** `docker compose up -d`, run `examples/llm-streaming` and watch tokens arrive, reset on the injected failure and be replaced by the final answer. Run `examples/standalone-worker` with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` and check the traces, metrics and correlated logs in Grafana on :3000.
 - `./ci.sh` passes: fmt, clippy `-D warnings`, all tests.
 

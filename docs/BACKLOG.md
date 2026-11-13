@@ -40,7 +40,7 @@ These come from iter1.
 - Retention cleanup for finished runs and their events.
 - Dashboard UI.
 
-## TypeScript binding
+## TypeScript SDK
 
 From [iter3](plans/iter3-sansio-core.md), S4.
 
@@ -48,13 +48,14 @@ From [iter3](plans/iter3-sansio-core.md), S4.
   to a GitHub `npm` environment, run `.github/workflows/typescript-release.yml` once without a tag, then push
   `typescript-v0.1.0`.
 - **More targets:** `linux-x64-musl` / `linux-arm64-musl` (Alpine), and `win32-arm64-msvc`.
-- **A README for the npm package.**
+- **Parity with the Rust SDK:** per-workflow flow control (`concurrency`, `throttle`, `rate_limit`), user streams
+  written from steps, `Client.watch`, and `Client.retry` of a failed run.
 
-## Python binding
+## Python SDK
 
 From [iter3](plans/iter3-sansio-core.md), where it was phase P4. On hold for now.
 
-- **`bindings/python`** (PyO3 + maturin), with the same surface as the TypeScript binding: an embedded `Worker` and
+- **`durable-workflow-py`** (PyO3 + maturin), with the same surface as the TypeScript SDK: an embedded `Worker` and
   `Client`, `workflow()`, `ctx.step/sleep/wait_for_signal/wait_for_event/create_hook`, and Postgres/Redis/memory
   backends selected by URL. Workflow bodies run on a dedicated asyncio loop; sync `def` steps run in a thread pool
   (see "How a TS workflow maps onto it" in the plan).
@@ -68,7 +69,7 @@ From [iter3](plans/iter3-sansio-core.md), where it was phase P4. On hold for now
 These come from [iter3](plans/iter3-sansio-core.md), seen while running `ci.sh` for P3 S3.
 
 - **Flaky chaos test under full-suite load.** `streaming_steps_finish_with_correct_output_despite_worker_kills`
-  (`crates/durable-workflow/tests/chaos.rs`) failed once in a full `./ci.sh` with "run 20: stream closed at the end":
+  (`durable-workflow-rs/tests/chaos.rs`) failed once in a full `./ci.sh` with "run 20: stream closed at the end":
   the run succeeded with the right output, but its `tokens` stream was not marked closed. It passed 6 out of 6 times
   when rerun alone or with the rest of the chaos file. Likely a race between a killed worker's attempt and the
   `Closed` marker when the machine is busy; find out whether the stream can stay open for good, or whether the test

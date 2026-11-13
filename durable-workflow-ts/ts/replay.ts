@@ -1,7 +1,7 @@
 // Replay a stored history through a workflow offline, with recording on,
 // through the engine's own entry point (`Worker::replay` in Rust): the same
 // loop `rebuild` runs, with no store and no step execution. The conformance
-// tests check bindings with it.
+// tests check SDKs with it.
 
 import type { Workflow } from "./execution.ts";
 import type { Event, Finish, Pending, TraceOp } from "./wire.ts";

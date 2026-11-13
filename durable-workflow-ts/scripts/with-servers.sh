@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run a command with throwaway Postgres and Redis servers for the binding's
+# Run a command with throwaway Postgres and Redis servers for the SDK's
 # server tests, e.g. `scripts/with-servers.sh npm test`.
 #
 # Exports DURABLE_TEST_DATABASE_URL and DURABLE_TEST_REDIS_URL, then removes

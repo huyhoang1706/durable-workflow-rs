@@ -17,7 +17,7 @@ up again by replaying its history, and steps that already finished do not run ag
 Build the SDK first, then install the example:
 
 ```bash
-cd ../../bindings/typescript && npm ci && npm run build:native && npm run build
+cd ../../durable-workflow-ts && npm ci && npm run build:native && npm run build
 ```
 
 ```bash

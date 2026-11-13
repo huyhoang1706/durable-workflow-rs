@@ -1,5 +1,5 @@
 # Cargo's output and npm's dependency trees: not Bazel packages.
 target
 node_modules
-bindings/typescript/node_modules
+durable-workflow-ts/node_modules
 examples/typescript-onboarding/node_modules
