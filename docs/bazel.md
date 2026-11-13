@@ -39,8 +39,59 @@ bazel build --config=clippy //...                   # clippy, warnings are error
 | `cargo test -p durable-workflow --test compile_fail` (trybuild) | stays Cargo: trybuild runs `cargo` |
 | `DURABLE_UPDATE_CORPUS=1 cargo test ... replay_corpus` | stays Cargo: it writes into the source tree |
 
-Machine-local flags (a disk cache, a remote cache key) go in `user.bazelrc`, which is git-ignored, for example
+Machine-local flags (a disk cache, the BuildBuddy key) go in `user.bazelrc`, which is git-ignored, for example
 `common --disk_cache=~/.cache/bazel-disk`.
+
+## Remote cache and results UI: BuildBuddy
+
+[BuildBuddy](https://www.buildbuddy.io) (free for open source) hosts a shared remote cache and a results page
+for every Bazel invocation. It is optional: without it, Bazel caches locally and CI uses the GitHub cache.
+
+`--config=buildbuddy` (in `.bazelrc`) turns on the results UI and the remote cache. The API key is never
+checked in, because the repository is public.
+
+**CI.** The `bazel` job in `.github/workflows/ci.yml` reads two repository secrets:
+
+| Secret | BuildBuddy key | Used by |
+|---|---|---|
+| `BUILDBUDDY_API_KEY` | read-write | pushes to `main`: they fill the cache |
+| `BUILDBUDDY_READONLY_API_KEY` | read-only | pull requests and the weekly run: they read `main`'s cache and write nothing |
+
+A pull request therefore cannot put a bad entry into the cache that `main` and other pull requests read. Forks
+get no secrets, so their runs use the GitHub disk cache instead, as they do when the secrets are not set.
+The job log prints the results link (`Streaming build results to: https://app.buildbuddy.io/invocation/...`).
+Each Monday the job also reruns every test with `--nocache_test_results`, so a cached pass cannot hide a
+changed `postgres`/`redis` image or a flaky test.
+
+Setting it up (once, by a maintainer):
+
+1. Sign in at <https://app.buildbuddy.io> and create the organization.
+2. In the organization settings, under API keys, create two keys: one for CI pushes, and one for pull requests
+   with **Read-only key (disable remote cache uploads)** checked.
+3. In the GitHub repository, under Settings, Secrets and variables, Actions, add them as `BUILDBUDDY_API_KEY`
+   and `BUILDBUDDY_READONLY_API_KEY`.
+4. Optional: link your GitHub account in BuildBuddy (user menu, *Link GitHub Account*) for commit statuses.
+   Results pages are visible to organization members only; add `common:ci --build_metadata=VISIBILITY=PUBLIC`
+   to `.bazelrc` to show them to everyone, for example to contributors from forks.
+
+**Locally.** Put a key in `user.bazelrc`. A read-only key lets you reuse what CI built without writing your
+machine's results into the shared cache:
+
+```
+common --config=buildbuddy-readonly
+common --remote_header=x-buildbuddy-api-key=<key>
+common --bes_header=x-buildbuddy-api-key=<key>
+```
+
+Use `--config=buildbuddy` instead of `buildbuddy-readonly` only with a key meant for writing. Without any key,
+`--config=buildbuddy` still uploads results, unauthenticated: anyone with the link can see them.
+
+Two things to keep in mind:
+
+- The results UI receives target names, command lines and test logs. The container tests' logs hold only the
+  throwaway containers' passwords.
+- The Docker-tagged tests run outside the sandbox, so their cached results are only as good as their declared
+  inputs. That is why the weekly uncached run exists.
 
 ## How it fits together
 
@@ -129,5 +180,4 @@ files are picked up by globs.
 ## Not covered yet
 
 - The TypeScript binding and example (Phase 3 of the plan).
-- A remote cache (BuildBuddy, Phase 5). Until then CI keeps a disk cache through `setup-bazel`.
 - Windows: not in `platform_triples`.

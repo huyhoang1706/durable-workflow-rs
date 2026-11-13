@@ -7,6 +7,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly: the bazel job reruns every test instead of trusting cached results, so a
+  # changed postgres/redis image or a flaky test still shows up.
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -40,14 +44,32 @@ jobs:
   bazel:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # BuildBuddy remote cache and results UI (docs/bazel.md). Pushes to main write
+      # the cache with a read-write key; pull requests only read it, with a read-only
+      # key, so a PR cannot put bad entries in the cache main and other PRs use. Forks
+      # get no secrets: the key is empty and the job uses the GitHub disk cache.
+      BUILDBUDDY_API_KEY: ${{ github.event_name == 'push' && secrets.BUILDBUDDY_API_KEY || secrets.BUILDBUDDY_READONLY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: bazel-contrib/setup-bazel@f34d6a05eae3c24acab7fa54587492daeaeffdab # 0.19.2
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ github.job }}
+          # Only without BuildBuddy: no point storing the same blobs twice.
+          disk-cache: ${{ env.BUILDBUDDY_API_KEY == '' && format('{0}-{1}', github.workflow, github.job) || false }}
           repository-cache: true
+      - name: Configure BuildBuddy
+        if: env.BUILDBUDDY_API_KEY != ''
+        run: |
+          config=buildbuddy-readonly
+          if [ "$GITHUB_EVENT_NAME" = push ]; then config=buildbuddy; fi
+          # user.bazelrc is git-ignored and imported by .bazelrc.
+          cat > user.bazelrc <<EOF
+          common --config=$config
+          common --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY
+          common --bes_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY
+          EOF
       # Clippy (warnings are errors) on every crate, then every test, including the
       # Postgres/Redis suites (Docker is available on the runner).
       - run: bazel build --config=ci --config=clippy //...
-      - run: bazel test --config=ci //...
+      - run: bazel test --config=ci ${{ github.event_name == 'schedule' && '--nocache_test_results' || '' }} //...

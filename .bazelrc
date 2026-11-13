@@ -29,7 +29,24 @@ build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
 # run to pass CI. MODULE.bazel.lock is refreshed by whoever next runs Bazel.
 common:ci --keep_going
 common:ci --verbose_failures
-common:ci --announce_rc
+common:ci --build_metadata=ROLE=CI
 
-# Machine-local settings (a disk cache, a remote cache key, ...).
+# BuildBuddy (https://www.buildbuddy.io): build results UI and a shared remote cache.
+#   bazel test --config=buildbuddy //...
+# The API key never goes in this file (the repository is public): CI passes it from
+# a GitHub secret, and developers put it in user.bazelrc (see docs/bazel.md):
+#   common --remote_header=x-buildbuddy-api-key=<key>
+#   common --bes_header=x-buildbuddy-api-key=<key>
+# Without a key, results are uploaded unauthenticated: anyone with the link sees them.
+common:buildbuddy --bes_results_url=https://app.buildbuddy.io/invocation/
+common:buildbuddy --bes_backend=grpcs://remote.buildbuddy.io
+common:buildbuddy --remote_cache=grpcs://remote.buildbuddy.io
+common:buildbuddy --remote_cache_compression
+common:buildbuddy --remote_timeout=10m
+common:buildbuddy --build_metadata=REPO_URL=https://github.com/huyhoang1706/durable-workflow-rs.git
+# Pull requests read the cache that main writes, but do not write to it.
+common:buildbuddy-readonly --config=buildbuddy
+common:buildbuddy-readonly --noremote_upload_local_results
+
+# Machine-local settings (a disk cache, the BuildBuddy key, ...). Git-ignored.
 try-import %workspace%/user.bazelrc
