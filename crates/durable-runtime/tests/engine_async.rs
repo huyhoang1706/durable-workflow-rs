@@ -794,3 +794,109 @@ async fn ready_resolves_even_when_asked_long_after_startup() {
         .expect("ready() must not hang when called late");
     worker.shutdown().await;
 }
+
+/// Counts store commits made by the engine.
+#[derive(Default)]
+struct CommitCounter(AtomicUsize);
+
+impl durable_spi::Observer for CommitCounter {
+    fn record(&self, metric: &durable_spi::Metric<'_>) {
+        if matches!(metric, durable_spi::Metric::Commit { .. }) {
+            self.0.fetch_add(1, SeqCst);
+        }
+    }
+}
+
+#[tokio::test]
+async fn steps_that_finish_together_are_committed_together() {
+    const N: usize = 100;
+    let clock = durable_testkit::ManualClock::new(durable_testkit::t0());
+    let mut backend = durable_memory::backend_with_clock(clock.clone());
+    let commits = Arc::new(CommitCounter::default());
+    backend.observer = commits.clone();
+    let mut h = Harness::with_backend(clock, backend);
+    // Every step waits here, so they all finish at once when the test joins.
+    let gate = Arc::new(tokio::sync::Barrier::new(N + 1));
+    let g = gate.clone();
+    h.spawn(
+        h.worker()
+            .register_fn("fan", move |ctx: WfAsyncCtx, _: Value| {
+                let g = g.clone();
+                async move {
+                    let calls = (0..N).map(|i| {
+                        let g = g.clone();
+                        ctx.step("s", async move {
+                            g.wait().await;
+                            Ok::<_, StepError>(i)
+                        })
+                        .into_future()
+                    });
+                    let all = futures::future::try_join_all(calls).await?;
+                    Ok(all.into_iter().sum::<usize>())
+                }
+            }),
+    );
+    let id = h.start("fan", json!(null)).await;
+    gate.wait().await;
+    let before = commits.0.load(SeqCst);
+    assert_eq!(h.succeeded(id).await, json!(N * (N - 1) / 2));
+    let after = commits.0.load(SeqCst);
+    // One commit per finished step would be N; a batch is one or a few.
+    assert!(
+        after - before < 5,
+        "{} commits for {N} steps that finished together",
+        after - before
+    );
+    let succeeded = h
+        .client
+        .events(id)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::StepSucceeded { .. }))
+        .count();
+    assert_eq!(succeeded, N);
+}
+
+#[tokio::test]
+async fn a_race_whose_steps_finish_in_one_batch_replays_with_the_same_winner() {
+    let mut h = Harness::new();
+    h.spawn(
+        h.worker()
+            .register_fn("race", |ctx: WfAsyncCtx, _: Value| async move {
+                // Both bodies return at once. On this single-threaded runtime
+                // both attempts finish before the engine wakes, so their
+                // results reach it in one batch and one commit.
+                let step = |name: &'static str| {
+                    ctx.step(name, async move { Ok::<_, StepError>(name.to_string()) })
+                };
+                let (a, b) = (step("a"), step("b"));
+                let winner = tokio::select! {
+                    v = a => v?,
+                    v = b => v?,
+                };
+                // Suspend, so the race is replayed from history on resume.
+                ctx.sleep("nap", Duration::from_secs(10)).await?;
+                Ok(winner)
+            }),
+    );
+    let id = h.start("race", json!(null)).await;
+    h.suspended(id).await;
+
+    // Both results are in history, in the order they arrived; the first wins.
+    let finished: Vec<String> = h
+        .client
+        .events(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::StepSucceeded { key, .. } => Some(key),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finished.len(), 2, "both steps committed: {finished:?}");
+
+    h.advance(10);
+    assert_eq!(h.succeeded(id).await, json!(finished[0]));
+}

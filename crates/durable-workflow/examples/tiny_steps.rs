@@ -1,6 +1,6 @@
 //! The tiny-step workloads of `bindings/typescript/bench/tiny-steps.ts`, with
 //! Rust workflows on the memory backend: the baseline the TypeScript numbers
-//! are compared with.
+//! are compared with, plus a fan-out whose steps finish one by one.
 //!
 //! ```text
 //! cargo run --release -p durable-workflow --example tiny_steps
@@ -35,13 +35,32 @@ async fn fan_out(ctx: WfAsyncCtx, n: u64) -> Result<u64, WorkflowError> {
     Ok(try_join_all(calls).await?.into_iter().sum())
 }
 
-async fn measure(scenario: &str, steps: u64, workflow: &str, inputs: Vec<u64>, concurrency: usize) {
+/// Fan-out whose steps finish one by one: step `i` sleeps `i * spread_us` µs.
+async fn fan_out_spread(ctx: WfAsyncCtx, (n, spread_us): (u64, u64)) -> Result<u64, WorkflowError> {
+    let calls = (0..n).map(|i| {
+        ctx.step("m", async move {
+            tokio::time::sleep(Duration::from_micros(i * spread_us)).await;
+            Ok::<_, StepError>(i)
+        })
+        .into_future()
+    });
+    Ok(try_join_all(calls).await?.into_iter().sum())
+}
+
+async fn measure(
+    scenario: &str,
+    steps: u64,
+    workflow: &str,
+    inputs: Vec<Value>,
+    concurrency: usize,
+) {
     let backend = durable_workflow::memory::backend();
     let worker = Worker::builder(backend.clone())
         .concurrency(concurrency)
         .poll_interval(Duration::from_millis(5))
         .register_fn("bench.sequential", sequential)
         .register_fn("bench.fan_out", fan_out)
+        .register_fn("bench.fan_out_spread", fan_out_spread)
         .build()
         .unwrap()
         .spawn();
@@ -51,7 +70,7 @@ async fn measure(scenario: &str, steps: u64, workflow: &str, inputs: Vec<u64>, c
     let mut handles = vec![];
     for n in inputs {
         let out = client
-            .start_raw(workflow, json!(n), Default::default())
+            .start_raw(workflow, n, Default::default())
             .await
             .unwrap();
         handles.push(out.handle().unwrap().clone());
@@ -75,13 +94,14 @@ async fn main() {
     let per_run = num("BENCH_STEPS_PER_RUN", 20);
     let fan = num("BENCH_FAN_OUT", 2_000);
     let concurrency = num("BENCH_CONCURRENCY", 64) as usize;
+    let spread_us = num("BENCH_SPREAD_US", 250);
 
     println!("backend: memory, Rust workflows");
     measure(
         &format!("1 run x {seq_steps} sequential steps"),
         seq_steps,
         "bench.sequential",
-        vec![seq_steps],
+        vec![json!(seq_steps)],
         concurrency,
     )
     .await;
@@ -89,7 +109,7 @@ async fn main() {
         &format!("{runs} runs x {per_run} steps, {concurrency} at once"),
         runs * per_run,
         "bench.sequential",
-        vec![per_run; runs as usize],
+        vec![json!(per_run); runs as usize],
         concurrency,
     )
     .await;
@@ -97,7 +117,17 @@ async fn main() {
         &format!("1 run, {fan} parallel steps"),
         fan,
         "bench.fan_out",
-        vec![fan],
+        vec![json!(fan)],
+        concurrency,
+    )
+    .await;
+    // Steps finish one by one, so results reach the engine in small batches.
+    // The floor is `fan * spread_us`: the time the last step sleeps.
+    measure(
+        &format!("1 run, {fan} parallel steps {spread_us} µs apart"),
+        fan,
+        "bench.fan_out_spread",
+        vec![json!([fan, spread_us])],
         concurrency,
     )
     .await;

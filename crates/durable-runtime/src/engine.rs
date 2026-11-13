@@ -6,7 +6,7 @@
 //! store first.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,7 +15,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use durable_sm::{DecideInput, Decision, FailureKind, Pending, Replayer, WorkflowFailure};
+use durable_sm::{
+    DecideInput, Decision, FailureKind, Pending, Replayer, RetryPolicy, StepLaunch, WorkflowFailure,
+};
 use durable_spi::{
     Backend, Commit, CommitOutcome, ComputePool, Error, Event, EventKind, HookReg, Metric, Result,
     Run, RunId, RunStatus, saturating_add,
@@ -69,11 +71,52 @@ struct StepDone {
 
 struct Running {
     attempt: u32,
+    /// The step's retry policy, for the attempt's outcome.
+    policy: RetryPolicy,
     cancelled: Arc<AtomicBool>,
     aborts: Vec<AbortHandle>,
     started: Instant,
     /// Closed (and exported) when the attempt's result is committed.
     span: tracing::Span,
+}
+
+impl Running {
+    /// Tell the attempt it is cancelled, and stop its tasks.
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.aborts.iter().for_each(AbortHandle::abort);
+    }
+}
+
+/// The engine's copy of the frontier, minus the steps that have a running
+/// attempt (those are in `Exec::running`). Kept current from the replayer's
+/// change feed, so a turn costs what changed instead of everything that is
+/// open: with thousands of parallel steps in flight, the idle part is small.
+#[derive(Default)]
+struct Idle {
+    /// By handle, which is issue order: the order `decide` expects.
+    by_handle: BTreeMap<u32, Pending>,
+    by_key: HashMap<String, u32>,
+}
+
+impl Idle {
+    fn insert(&mut self, handle: u32, p: Pending) {
+        self.by_key.insert(p.key().to_string(), handle);
+        self.by_handle.insert(handle, p);
+    }
+
+    fn remove(&mut self, key: &str) -> Option<Pending> {
+        let handle = self.by_key.remove(key)?;
+        self.by_handle.remove(&handle)
+    }
+
+    fn get(&self, key: &str) -> Option<&Pending> {
+        self.by_handle.get(self.by_key.get(key)?)
+    }
+
+    fn to_vec(&self) -> Vec<Pending> {
+        self.by_handle.values().cloned().collect()
+    }
 }
 
 /// The step's name without the `#n` / `[i]` suffix that makes its key unique.
@@ -92,8 +135,19 @@ pub(crate) async fn notify_run(backend: &Backend, run_id: RunId, notice: Value) 
     .await;
 }
 
+/// Most step results handled in one turn of the run loop, and so in one
+/// commit. Bounds the size of a commit when thousands of steps finish at once.
+const MAX_DONE_PER_TURN: usize = 1024;
+
+/// The in-flight overlay is rewritten at most this often while steps start and
+/// finish, since each write serializes every running attempt.
+const PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
+
 enum Wake {
-    Done(StepDone),
+    /// Every step result that was ready, oldest first.
+    Done(Vec<StepDone>),
+    /// A deferred write of the in-flight overlay is due.
+    Publish,
     Timer,
     Cancel,
     CancelStreamClosed,
@@ -182,12 +236,16 @@ async fn execute_run(
         last_seq: events.last().map_or(0, |e| e.seq),
         raw: events,
         running: HashMap::new(),
+        idle: Idle::default(),
         done_tx,
         done_rx,
         cancel_sub,
         lost,
         inbox_checked: false,
         published_steps: Default::default(),
+        steps_dirty: false,
+        last_publish: None,
+        publish_at: None,
         streams: StreamHub::new(
             &env.backend,
             run_id,
@@ -268,6 +326,8 @@ struct Exec<'a> {
     raw: Vec<Event>,
     last_seq: u64,
     running: HashMap<String, Running>,
+    /// The open commands that `running` does not cover.
+    idle: Idle,
     done_tx: tokio::sync::mpsc::UnboundedSender<StepDone>,
     done_rx: tokio::sync::mpsc::UnboundedReceiver<StepDone>,
     cancel_sub: Option<futures::stream::BoxStream<'static, Vec<u8>>>,
@@ -276,7 +336,12 @@ struct Exec<'a> {
     /// Inbox signals for already-open waits are consumed by the first commit.
     inbox_checked: bool,
     /// Step attempts last published to the in-flight overlay.
-    published_steps: std::collections::BTreeMap<String, u32>,
+    published_steps: BTreeMap<String, u32>,
+    /// `running` changed since the overlay was last written.
+    steps_dirty: bool,
+    last_publish: Option<Instant>,
+    /// When a write that `PUBLISH_INTERVAL` held back is due.
+    publish_at: Option<Instant>,
     streams: Arc<StreamHub>,
 }
 
@@ -293,10 +358,7 @@ impl Exec<'_> {
     }
 
     fn abort_all(&mut self) {
-        for (_, r) in self.running.drain() {
-            r.cancelled.store(true, Ordering::SeqCst);
-            r.aborts.iter().for_each(AbortHandle::abort);
-        }
+        self.running.drain().for_each(|(_, r)| r.cancel());
     }
 
     fn fault(&self) -> Option<String> {
@@ -323,6 +385,49 @@ impl Exec<'_> {
         });
         self.status = host::replay(&self.replay, &mut *exec, ExecStatus::Pending).await;
         self.host = Some(exec);
+        // The new replayer lists every command it has; start the copy over.
+        self.idle = Idle::default();
+        self.sync_frontier(true);
+    }
+
+    /// Bring `idle` up to date with the replayer, and abort attempts whose
+    /// command left the frontier (resolved, or its future was dropped).
+    ///
+    /// `full` is for a new replayer, whose changes list every command: an
+    /// attempt it does not list as open is aborted too.
+    fn sync_frontier(&mut self, full: bool) {
+        let changes = self.replay.with(Replayer::take_frontier_changes);
+        let mut live = HashSet::new();
+        for c in changes {
+            match c.pending {
+                Some(p) => {
+                    if full {
+                        live.insert(c.key.clone());
+                    }
+                    if !self.running.contains_key(&c.key) {
+                        self.idle.insert(c.handle.0, p);
+                    }
+                }
+                None => {
+                    self.idle.remove(&c.key);
+                    if let Some(r) = self.running.remove(&c.key) {
+                        r.cancel();
+                        self.steps_dirty = true;
+                    }
+                }
+            }
+        }
+        if full {
+            let before = self.running.len();
+            self.running.retain(|key, r| {
+                let keep = live.contains(key);
+                if !keep {
+                    r.cancel();
+                }
+                keep
+            });
+            self.steps_dirty |= self.running.len() != before;
+        }
     }
 
     async fn run_loop(&mut self) -> Result<Outcome> {
@@ -337,13 +442,15 @@ impl Exec<'_> {
             if let ExecStatus::Finished(res) = self.status.clone() {
                 return self.on_finished(res).await;
             }
-            let frontier = self.frontier();
-            self.reap(&frontier);
+            self.sync_frontier(false);
+            // Steps with a running attempt are left out (see `Idle`).
+            let frontier = self.idle.to_vec();
             let decision = durable_sm::decide(&DecideInput {
                 frontier: &frontier,
                 now: self.now(),
                 deadline_at: self.run.deadline_at,
                 running: &|key| self.running.contains_key(key),
+                running_elsewhere: self.running.len(),
                 inbox_checked: self.inbox_checked,
                 inline_threshold: self.env.inline_threshold,
             });
@@ -367,7 +474,7 @@ impl Exec<'_> {
                     continue;
                 }
                 Decision::Suspend { wake_at } => {
-                    self.publish_steps().await;
+                    self.publish_steps(true).await;
                     if let Some(outcome) = self.suspend(&frontier, wake_at).await? {
                         return Ok(outcome);
                     }
@@ -376,28 +483,43 @@ impl Exec<'_> {
                 Decision::Run { launch, wake_at } => {
                     // A host that can no longer start a body (a Rust FnOnce an
                     // earlier attempt took) needs a rebuild; launch the rest then.
-                    if !launch
-                        .iter()
-                        .all(|l| self.launch(&l.key, l.attempt, l.timeout))
-                    {
+                    if !launch.iter().all(|l| self.launch(l)) {
                         self.rebuild().await;
                         continue;
                     }
-                    self.publish_steps().await;
+                    self.publish_steps(false).await;
                     wake_at
                 }
             };
 
             let clock = self.env.backend.clock.clone();
+            let publish_at = self.publish_at;
             let (done_rx, cancel_sub, lost) = (&mut self.done_rx, &mut self.cancel_sub, &self.lost);
             let wake = tokio::select! {
-                Some(done) = done_rx.recv() => Wake::Done(done),
+                Some(first) = done_rx.recv() => {
+                    // Drain what else is ready: one commit for all of them
+                    // instead of one turn (frontier, decide, commit) each.
+                    let mut batch = vec![first];
+                    while batch.len() < MAX_DONE_PER_TURN {
+                        match done_rx.try_recv() {
+                            Ok(d) => batch.push(d),
+                            Err(_) => break,
+                        }
+                    }
+                    Wake::Done(batch)
+                }
                 _ = async {
                     match next_wake {
                         Some(t) => clock.sleep_until(t).await,
                         None => std::future::pending().await,
                     }
                 } => Wake::Timer,
+                _ = async {
+                    match publish_at {
+                        Some(t) => tokio::time::sleep_until(t.into()).await,
+                        None => std::future::pending().await,
+                    }
+                } => Wake::Publish,
                 msg = async {
                     match cancel_sub.as_mut() {
                         Some(s) => s.next().await,
@@ -407,21 +529,40 @@ impl Exec<'_> {
                 _ = lost.notified() => Wake::Lost,
             };
             match wake {
-                Wake::Done(d) => self.on_step_done(d, &frontier).await?,
+                Wake::Done(batch) => self.on_steps_done(batch, &frontier).await?,
                 Wake::Cancel => self.cancel_requested = true,
                 Wake::Lost => return Ok(Outcome::Abandoned),
                 Wake::CancelStreamClosed => self.cancel_sub = None,
+                Wake::Publish => self.publish_steps(false).await,
                 Wake::Timer => {}
             }
         }
     }
 
     /// Keep the cache's in-flight view of running step attempts current.
-    async fn publish_steps(&mut self) {
+    ///
+    /// Throttled to one write per `PUBLISH_INTERVAL`: a change inside the
+    /// interval is written when it ends (see `Wake::Publish`). `force` writes
+    /// now, for when the loop is about to stop turning.
+    async fn publish_steps(&mut self, force: bool) {
         let Some(cache) = &self.env.backend.cache else {
             return;
         };
-        let steps: std::collections::BTreeMap<String, u32> = self
+        if !self.steps_dirty {
+            return;
+        }
+        let now = Instant::now();
+        if let Some(last) = self.last_publish
+            && !force
+            && now < last + PUBLISH_INTERVAL
+        {
+            self.publish_at = Some(last + PUBLISH_INTERVAL);
+            return;
+        }
+        self.steps_dirty = false;
+        self.publish_at = None;
+        self.last_publish = Some(now);
+        let steps: BTreeMap<String, u32> = self
             .running
             .iter()
             .map(|(k, r)| (k.clone(), r.attempt))
@@ -434,19 +575,6 @@ impl Exec<'_> {
             crate::inflight::write(&**cache, self.run.id, &state).await;
         }
         self.published_steps = steps;
-    }
-
-    /// Abort tasks whose command is gone (resolved, or its future was dropped).
-    fn reap(&mut self, frontier: &[Pending]) {
-        let live: HashSet<&str> = frontier.iter().map(Pending::key).collect();
-        self.running.retain(|key, r| {
-            let keep = live.contains(key.as_str());
-            if !keep {
-                r.cancelled.store(true, Ordering::SeqCst);
-                r.aborts.iter().for_each(AbortHandle::abort);
-            }
-            keep
-        });
     }
 
     fn build_commit(
@@ -557,7 +685,16 @@ impl Exec<'_> {
     }
 
     /// Start an attempt. `false` when the host can no longer start the body.
-    fn launch(&mut self, key: &str, attempt: u32, timeout: Option<Duration>) -> bool {
+    fn launch(&mut self, l: &StepLaunch) -> bool {
+        let (key, attempt, timeout) = (l.key.as_str(), l.attempt, l.timeout);
+        let Some(Pending::Step { policy, .. }) = self.idle.get(key) else {
+            debug_assert!(
+                false,
+                "`decide` launched `{key}`, which is not an idle step"
+            );
+            return true;
+        };
+        let policy = *policy;
         let name = step_name(key);
         let span = tracing::info_span!(
             "step",
@@ -632,10 +769,13 @@ impl Exec<'_> {
             }
         });
         aborts.push(forward.abort_handle());
+        self.steps_dirty = true;
+        self.idle.remove(key);
         self.running.insert(
             key.to_string(),
             Running {
                 attempt,
+                policy,
                 cancelled,
                 aborts,
                 started: Instant::now(),
@@ -645,19 +785,33 @@ impl Exec<'_> {
         true
     }
 
-    async fn on_step_done(&mut self, done: StepDone, frontier: &[Pending]) -> Result<()> {
+    /// Record a batch of finished attempts in one commit. Results for attempts
+    /// the engine no longer runs (an older attempt, or one it aborted) are
+    /// dropped.
+    async fn on_steps_done(&mut self, batch: Vec<StepDone>, frontier: &[Pending]) -> Result<()> {
+        let mut events = Vec::with_capacity(batch.len());
+        for done in batch {
+            if let Some(event) = self.step_event(done).await {
+                events.push(event);
+            }
+        }
+        if !events.is_empty() {
+            self.commit_running(events, vec![], frontier).await?;
+        }
+        Ok(())
+    }
+
+    /// The event for one finished attempt, with its span, metric and stream
+    /// bookkeeping done. `None` for a result the engine no longer waits for.
+    async fn step_event(&mut self, done: StepDone) -> Option<EventKind> {
         match self.running.get(&done.key) {
             Some(r) if r.attempt == done.attempt => {}
-            _ => return Ok(()), // stale
+            _ => return None, // stale
         }
         let running = self.running.remove(&done.key).expect("checked above");
+        self.steps_dirty = true;
         running.aborts.iter().for_each(AbortHandle::abort);
-        let Some(policy) = frontier.iter().find_map(|p| match p {
-            Pending::Step { key, policy, .. } if *key == done.key => Some(*policy),
-            _ => None,
-        }) else {
-            return Ok(());
-        };
+        let policy = running.policy;
         let step_key = done.key.clone();
         let event = durable_sm::step_outcome(
             done.key,
@@ -689,9 +843,7 @@ impl Exec<'_> {
         self.streams
             .finish_step(&step_key, done.attempt, failed)
             .await;
-        drop(running);
-        self.commit_running(vec![event], vec![], frontier).await?;
-        Ok(())
+        Some(event)
     }
 
     async fn finish_commit(&mut self, kind: EventKind) -> Result<()> {
