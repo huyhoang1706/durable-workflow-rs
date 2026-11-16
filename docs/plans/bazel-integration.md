@@ -1,7 +1,8 @@
 # Bazel integration: one build graph for Rust and TypeScript
 
 > Status: Phases 1 and 2 (Rust builds, tests, clippy, dependency checks) done on 2026-11-13; the user guide is
-> [`../bazel.md`](../bazel.md). Phase 3 (TypeScript) and later are not started. Researched 2026-11-12. Items
+> [`../bazel.md`](../bazel.md). Phase 3 (TypeScript) is a proposal, revised 2026-11-16; it and the later phases are
+> not started. Researched 2026-11-12. Items
 > marked **(verify)** come from reading docs; the Phase 1/2 outcomes below settle the Rust ones.
 
 ## Phase 1 and 2 outcomes (2026-11-13)
@@ -403,30 +404,91 @@ against, because a glob that matches nothing fails silently; set `allow_empty = 
 
 ### Phase 3: TypeScript (2 to 3 days)
 
-- Root `package.json` (private), `pnpm-workspace.yaml`, `pnpm-lock.yaml` generated with `pnpm import` from the two
-  `package-lock.json` files so versions do not move; delete the npm lockfiles; update README and AGENTS.md
-  commands.
-- `durable-workflow-ts/BUILD.bazel`:
-  - `copy_file` from the `rust_shared_library` output to `durable.<platform>.node`. The platform suffix is a
-    `select()` over OS and CPU, matching `napi build --platform`.
-  - `ts_project(name = "typecheck", no_emit = True, tsc = ":tsc")` with the TS 7 binary, as perplexity-node does.
-    The tsconfig uses `allowImportingTsExtensions` and `erasableSyntaxOnly`; pass the existing `tsconfig.json`
-    rather than restating the options.
-  - Vitest through the generated `vitest_bin.vitest_test`, with `env = {"DURABLE_NATIVE": "$(rootpath :addon)"}`
-    and the addon, `ts/**`, `test/**` and the corpus as `data`.
-  - tsdown through `tsdown_bin.tsdown` producing `dist/`, then `npm_package(name = "pkg")` with `dist/` and the
-    addon, so `examples/typescript-onboarding` resolves `@durable/typescript` to the built package through the
-    pnpm workspace link.
-- `examples/typescript-onboarding/BUILD.bazel`: typecheck and Vitest.
+> Proposal, revised 2026-11-16 after reading `@napi-rs/cli` 3.10.12 (the version in `package.json`). Not started.
+> It replaces the first sketch of this phase; the pnpm decision (decision 1) and the Vitest spike are unchanged.
 
-Vitest under `rules_js` is the least certain part of the plan **(verify)**: `pool: "forks"` spawns child processes,
-Vitest writes a cache directory, and `rules_js` runs out of a symlinked `node_modules` in runfiles. Spike this
-first, before the rest of the phase. If it does not work cleanly within half a day, the fallback is a `sh_test`
-that runs the pnpm-installed Vitest unsandboxed with the Bazel-built addon: it loses hermeticity but keeps the
-caching, which is what we are after.
+Goal: `bazel test //durable-workflow-ts/... //examples/typescript-onboarding/...` builds the addon, typechecks,
+runs Vitest and packs the SDK, with the Rust and TypeScript halves in one graph. Editing a `.ts` file compiles no
+Rust; editing a plugin reruns the SDK tests that load the addon.
 
-Done when: `bazel test //durable-workflow-ts/... //examples/typescript-onboarding/...` passes, and editing a `.ts` file
-recompiles no Rust.
+#### Where the napi CLI fits
+
+`@napi-rs/cli` has a programmatic API (`import { NapiCli } from "@napi-rs/cli"`, with `build`, `artifacts`,
+`createNpmDirs`, `prePublish`, `universalize`, `version`, plus the standalone `generateTypeDef` and
+`writeJsBinding`). What each would mean under Bazel:
+
+| API | Under Bazel | Why |
+|---|---|---|
+| `NapiCli().build()` | **Not used** | It spawns `cargo build`. Inside a Bazel action that is a second, unsandboxed, uncached Rust compile next to the one `rules_rs` already does |
+| `artifacts()`, `prePublish()` | Not in the graph; the release workflow keeps calling them (CLI or API, same code) | They copy `.node` files into `npm/<platform>/` and publish: release steps, with nothing to cache |
+| `generateTypeDef()`, `writeJsBinding()` | Not used for now | They run without Cargo, but read the intermediate files napi-derive writes to `NAPI_TYPE_DEF_TMP_FOLDER` while rustc expands the macros: an undeclared output Bazel cannot track. A drift test between `ts/native.ts` and the `#[napi]` items is a possible follow-up (Phase 5) |
+
+The SDK does not need `build()` for anything but the compile. `build:native` passes `--no-js`, the loader and the
+typings are hand-written in `ts/native.ts`, and the generated `index.d.ts` is git-ignored. So `napi build` here is
+`cargo build` plus a copy to `durable.<platform>.node`, and Bazel already has the first half:
+`//durable-workflow-ts:durable_typescript_shared` builds today, with `napi_build::setup()`'s linker flags coming
+through `:build_script`.
+
+#### Steps
+
+1. **Spike Vitest under `rules_js` first** (half a day, throwaway branch). `pool: "forks"` spawns child processes,
+   Vitest writes a cache directory, and `rules_js` runs out of a symlinked `node_modules` in runfiles. If it does
+   not run cleanly, the fallback is a `sh_test` that runs the pnpm-installed Vitest unsandboxed with the
+   Bazel-built addon: less hermetic, still cached.
+2. **pnpm workspace.** Root `package.json` (private), `pnpm-workspace.yaml` with both packages, `pnpm-lock.yaml`
+   from `pnpm import` on the two `package-lock.json` files so versions do not move. Delete the npm lockfiles; the
+   example's `file:../../durable-workflow-ts` becomes `workspace:*`. Update README, AGENTS.md, `ci.sh` and both
+   GitHub workflows from `npm` to `pnpm`.
+3. **`MODULE.bazel`.** `aspect_rules_js`, `aspect_rules_ts`, `rules_nodejs` with Node pinned to a 22.x that
+   satisfies `engines` (>= 22.18), `bazel_lib`; `npm.npm_translate_lock(pnpm_lock = "//:pnpm-lock.yaml")`. Root
+   `BUILD.bazel` calls `npm_link_all_packages()`.
+4. **`durable-workflow-ts/BUILD.bazel`**, next to the existing `durable_rust_crate` call:
+
+   | Target | Rule | Notes |
+   |---|---|---|
+   | `:addon` | `copy_file` from `:durable_typescript_shared` | Output `durable.<platform>.node`; the suffix is a `select()` over OS and CPU that matches `platformTriple()` in `ts/native.ts` (`linux-x64-gnu`, `linux-arm64-gnu`, `darwin-arm64`) |
+   | `:typecheck` | `ts_project(no_emit = True, tsc = ":tsc")` | `:tsc` is `typescript_bin.tsc_binary` from the npm `typescript` 7 package, as perplexity-node does. Passes the existing `tsconfig.json` |
+   | `:test` | `vitest_bin.vitest_test` | `env = {"DURABLE_NATIVE": "$(rootpath :addon)"}`; `data`: `:addon`, `ts/**`, `test/**`, `vitest.config.ts`, the corpus. The memory-backend cases only |
+   | `:servers_test` | the same, tagged `DOCKER_TEST_TAGS` | The Postgres/Redis cases, through `scripts/with-servers.sh` |
+   | `:dist` | `tsdown_bin.tsdown` | `dist/` as a declared output directory |
+   | `:pkg` | `npm_package` | `package.json`, `dist/` and `:addon`, so a consumer resolves the built package |
+
+5. **`examples/typescript-onboarding/BUILD.bazel`.** `:typecheck` and `:test` against `//durable-workflow-ts:pkg`
+   through the workspace link.
+6. **Docs.** `docs/bazel.md` (commands, the mapping table, "Not covered yet"), AGENTS.md, the SDK's README.
+
+#### What has to be checked while doing it
+
+- `test/corpus.ts` reads `../../crates/durable-testkit/corpus/` relative to itself. That holds in runfiles when the
+  corpus is `data` (the layout is preserved); otherwise read `DURABLE_CORPUS_DIR`, as the Rust tests do.
+- `ts/native.ts` needs no change: `DURABLE_NATIVE` wins over the file next to `ts/`.
+- The addon links the hermetic toolchain's `libc++` through an `$ORIGIN`-relative path inside `bazel-bin`.
+  `copy_file` moves the `.node` away from that path, so the test may need the library in its runfiles, or the
+  addon needs `libc++` linked statically. This is the first thing the spike should load.
+- The addon is built in whatever compilation mode the invocation uses (`fastbuild` by default). That is right for
+  tests; the tiny-step benchmark needs `-c opt`.
+- `npm run test:servers` starts containers with the `docker` CLI, not testcontainers: `:servers_test` needs
+  `docker` on `PATH` outside the sandbox.
+
+#### What stays outside Bazel
+
+- **Publishing.** `.github/workflows/typescript-release.yml` keeps Cargo, `napi build --release --strip` on five
+  native runners, `napi artifacts` and `napi pre-publish`. A Bazel-built addon depends on the hermetic `libc++`
+  and has no checked glibc floor, so it is not what goes to npm. Moving it is the cross-build item in Phase 5.
+- **`npm run bench`** and the `test:watch` loop: developer commands, run with pnpm.
+- **Cargo and pnpm keep working on their own.** `pnpm install && pnpm run build:native && pnpm test` in
+  `durable-workflow-ts` stays the documented inner loop; Bazel is for CI and for cached reruns.
+
+#### CI
+
+The `bazel` job already runs `bazel test //...`, so the new targets are picked up with no workflow change. The
+`ci` job keeps running the npm (then pnpm) commands through `./ci.sh` until the Phase 4 gate decides whether it
+goes. BuildBuddy stays what it is today, the remote cache and results UI: BuildBuddy Workflows was considered and
+dropped (Phase 5).
+
+Done when: `bazel test //durable-workflow-ts/... //examples/typescript-onboarding/...` passes on Linux and on an
+Apple silicon Mac, a `.ts` edit recompiles no Rust, and a `plugins/durable-redis` edit reruns `:servers_test` but
+not `:typecheck`.
 
 ### Phase 4: CI (1 day, then a soak)
 
@@ -468,6 +530,9 @@ GitHub's cache holds 10 GB per repository and a PR can read the default branch's
 | Reuse in `TypeScript release`: the linux-x64 build and test leg becomes a Bazel invocation sharing the cache | After a remote cache exists |
 | Cross-build the release addons from one Linux runner (the toolchains are already in place with `rules_rs`) | The five-runner matrix becomes a cost or a reliability problem. Needs its own check that the glibc floor and the macOS and Windows artifacts match what `napi build` produces today |
 | `publint` / `attw` tests on the npm package | Any time; small |
+| Typings drift test: `generateTypeDef()` from `@napi-rs/cli` against the hand-written `ts/native.ts` | The addon's surface changes often enough that the two drift. Needs napi-derive's intermediate type files as a declared output first |
+| `bazel-diff` (Tinder) to pick affected targets | Not while the graph is this small: the remote cache already skips unchanged compiles and tests, and most crates depend on `durable-sm`. Its use here would be gating the jobs outside Bazel (the Cargo job, the release matrix) once Phase 3 puts TypeScript in the graph. Until then a `paths:` filter does that. With `rules_rs` it needs `--labelOnlyModuleExtensions=@rules_rs//rs:extensions.bzl%crate`, or every `Cargo.lock` change marks the whole workspace |
+| BuildBuddy Workflows (hosted CI runners) | **Rejected 2026-11-16.** The hosted runners are Linux amd64 only; macOS needs self-hosted executors and there is no Windows or Linux arm64. The release matrix needs all of them, so CI would be split across two systems. GitHub Actions stays the only CI; BuildBuddy stays the cache and results UI |
 | Python binding | Start it inside Bazel (`rules_python`, `rules_uv`, PyO3 cdylib built the same way as the addon) |
 | `gazelle` for BUILD files | The number of TypeScript packages grows past a handful |
 
@@ -551,5 +616,10 @@ as the remote cache, set up in Phase 5 so the Phase 4 comparison against `./ci.s
   `rust_test_suite`, rust-analyzer setup. <https://bazelbuild.github.io/rules_rust/>
 - hermeticbuild/rules_rs README. <https://github.com/hermeticbuild/rules_rs>
 - Aspect `rules_js` documentation on `npm_translate_lock` and pnpm. <https://docs.aspect.build/bazel/javascript>
+- `@napi-rs/cli` 3.10.12 from npm (read 2026-11-16): `dist/index.d.ts`, `docs/build.md`, `docs/artifacts.md`,
+  `src/api/build.ts`. The programmatic API page is <https://napi.rs/docs/cli/programmatic-api>.
+- BuildBuddy Workflows documentation. <https://www.buildbuddy.io/docs/workflows-setup>,
+  <https://www.buildbuddy.io/docs/workflows-config>
+- Tinder/bazel-diff README at v78.0.0. <https://github.com/Tinder/bazel-diff>
 - Module versions from the Bazel Central Registry on 2026-11-12: rules_rust 0.75.0, rules_rs 0.2.4,
   aspect_rules_js 3.6.0, aspect_rules_ts 3.10.1, rules_nodejs 6.7.7; Bazel 9.3.2.
