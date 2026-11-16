@@ -1,8 +1,130 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@bazel_lib//lib:copy_file.bzl", "copy_file")
 load("@crates//durable-typescript:data.bzl", "aliases", "all_crate_deps", "crate_data")
-load("//bazel:rust.bzl", "durable_rust_crate")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//durable-workflow-ts:tsdown/package_json.bzl", tsdown_bin = "bin")
+load("@npm//durable-workflow-ts:typescript/package_json.bzl", typescript_bin = "bin")
+load("@npm//durable-workflow-ts:vitest/package_json.bzl", vitest_bin = "bin")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel:rust.bzl", "DOCKER_TEST_TAGS", "durable_rust_crate")
+load("//bazel:typescript.bzl", "NAPI_TRIPLES")
 
+# The Rust half: `:durable_typescript_shared` is the Node-API addon (a cdylib).
 durable_rust_crate(
     aliases = aliases,
     all_crate_deps = all_crate_deps,
     crate_data = crate_data,
+)
+
+npm_link_all_packages(name = "node_modules")
+
+exports_files(["scripts/with-servers.sh"])
+
+# The addon under the name `npm run build:native` gives it, `durable.<platform>.node` in
+# the package root, where `ts/native.ts` looks first. One target per platform (an output
+# name cannot be a select()); `:addon` picks the one for the target platform.
+[
+    copy_file(
+        name = "addon_" + triple,
+        src = ":durable_typescript_shared",
+        out = "durable.%s.node" % triple,
+        target_compatible_with = constraints,
+    )
+    for triple, constraints in NAPI_TRIPLES.items()
+]
+
+alias(
+    name = "addon",
+    actual = select({
+        "//bazel:" + triple: ":addon_" + triple
+        for triple in NAPI_TRIPLES
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# Every file goes into exactly one js_library: rules_js copies sources into bazel-bin,
+# and two targets copying the same file are conflicting actions.
+js_library(
+    name = "srcs",
+    srcs = glob(["ts/**/*.ts"]) + [
+        "package.json",
+        "tsconfig.json",
+        "tsdown.config.ts",
+        "vitest.config.ts",
+    ],
+)
+
+js_library(
+    name = "tests",
+    srcs = glob(["test/**/*.ts", "bench/**/*.ts"]),
+)
+
+# `npm run typecheck`. TypeScript 7 is a native binary: `tsc` from the npm package, not
+# ts_project, so the existing tsconfig.json (noEmit, .ts imports) is used as it is.
+typescript_bin.tsc_test(
+    name = "typecheck",
+    args = ["--project", "tsconfig.json"],
+    chdir = package_name(),
+    data = [
+        ":node_modules",
+        ":srcs",
+        ":tests",
+    ],
+)
+
+# `npm test`: the memory-backend cases and the corpus checks through the FFI. The
+# Postgres/Redis cases skip without DURABLE_TEST_DATABASE_URL. `ts/native.ts` finds the
+# addon next to `ts/`, as after `npm run build:native`.
+vitest_bin.vitest_test(
+    name = "test",
+    args = ["run"],
+    chdir = package_name(),
+    data = [
+        ":addon",
+        ":node_modules",
+        ":srcs",
+        ":tests",
+        "//crates/durable-testkit:corpus_bin",
+    ],
+)
+
+# `npm run test:servers`: the same suite with throwaway Postgres and Redis containers
+# (started with the `docker` CLI by scripts/with-servers.sh), or the servers in
+# DURABLE_TEST_DATABASE_URL / DURABLE_TEST_REDIS_URL.
+sh_test(
+    name = "servers_test",
+    size = "large",
+    srcs = ["scripts/with-servers.sh"],
+    args = ["$(rootpath :test)"],
+    data = [":test"],
+    tags = DOCKER_TEST_TAGS,
+)
+
+# `npm run build`: dist/ (ESM bundle and .d.mts) from tsdown.
+tsdown_bin.tsdown(
+    name = "dist",
+    srcs = [
+        ":node_modules",
+        ":srcs",
+    ],
+    args = ["--logLevel", "warn"],
+    chdir = package_name(),
+    out_dirs = ["dist"],
+    # The .d.mts comes from tsgo, a native binary that resolves the sandbox's symlinks
+    # to the execroot and then cannot match its output to the input it was given. The
+    # action stays cached; it only runs in the execroot.
+    tags = ["no-sandbox"],
+)
+
+# The package as a consumer installs it: package.json, dist/ and the addon. The example
+# depends on it through `workspace:*`, which rules_js links to this target.
+npm_package(
+    name = "pkg",
+    srcs = [
+        "package.json",
+        ":addon",
+        ":dist",
+    ],
+    visibility = ["//visibility:public"],
 )

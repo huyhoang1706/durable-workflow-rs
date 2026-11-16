@@ -2,3 +2,4 @@
 /logs
 /bazel-*
 /user.bazelrc
+/node_modules

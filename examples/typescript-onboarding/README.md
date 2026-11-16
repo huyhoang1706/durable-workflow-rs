@@ -14,20 +14,20 @@ up again by replaying its history, and steps that already finished do not run ag
 
 ## Run it
 
-Build the SDK first, then install the example:
+Install the pnpm workspace (from the repository root, it links this example to the SDK) and build the SDK:
 
 ```bash
-cd ../../durable-workflow-ts && npm ci && npm run build:native && npm run build
+pnpm install
 ```
 
 ```bash
-npm install
+cd ../../durable-workflow-ts && pnpm run build:native && pnpm run build
 ```
 
 With the memory backend, nothing survives a restart:
 
 ```bash
-npm start
+pnpm start
 ```
 
 With Postgres and Redis from the repository's `docker-compose.yml`:
@@ -37,7 +37,7 @@ docker compose up -d
 ```
 
 ```bash
-DATABASE_URL=postgres://postgres:postgres@localhost/durable REDIS_URL=redis://localhost npm start
+DATABASE_URL=postgres://postgres:postgres@localhost/durable REDIS_URL=redis://localhost pnpm start
 ```
 
 Then:
@@ -59,7 +59,7 @@ stopped. Several processes on the same database and Redis share the runs between
 
 ## Test it
 
-`npm test` runs the cases on the memory backend. `npm run test:servers` also runs the Postgres and Redis cases, on
+`pnpm test` runs the cases on the memory backend. `pnpm run test:servers` also runs the Postgres and Redis cases, on
 throwaway containers (Docker must be running):
 
 - a run waiting for verification survives a restart;

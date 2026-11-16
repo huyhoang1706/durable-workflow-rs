@@ -1,6 +1,6 @@
 // Crash and resume with the real app: `node src/main.ts`, killed with SIGKILL
 // while it sends the welcome mail, then started again. Needs Postgres and
-// Redis (DURABLE_TEST_DATABASE_URL / DURABLE_TEST_REDIS_URL; `npm run
+// Redis (DURABLE_TEST_DATABASE_URL / DURABLE_TEST_REDIS_URL; `pnpm run
 // test:servers` starts both).
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -26,7 +26,7 @@ afterEach(() => {
   apps.clear();
 });
 
-/** Start the app as `npm start` would; resolves once it listens. */
+/** Start the app as `pnpm start` would; resolves once it listens. */
 function startApp(env: Record<string, string>): Promise<App> {
   const child = spawn(process.execPath, [MAIN], {
     env: { ...process.env, PORT: "0", ...env },

@@ -18,6 +18,7 @@ on:
       - crates/**
       - plugins/**
       - Cargo.lock
+      - pnpm-lock.yaml
       - .github/workflows/typescript-release.yml
   workflow_dispatch:
 
@@ -63,18 +64,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: durable-workflow-ts/package-lock.json
-      - run: npm ci
-      - run: npx napi build --platform --no-js --release --strip --target ${{ matrix.target }} -p durable-typescript
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec napi build --platform --no-js --release --strip --target ${{ matrix.target }} -p durable-typescript
         shell: bash
       # The memory-backend tests: no Docker on macOS and Windows runners. The
       # Postgres/Redis cases skip without DURABLE_TEST_DATABASE_URL.
       - if: matrix.test
-        run: npm run typecheck && npm test
+        run: pnpm run typecheck && npm test
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
@@ -88,18 +89,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: durable-workflow-ts/package-lock.json
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           path: durable-workflow-ts/artifacts
       # Fails unless every target in package.json `napi.targets` was built.
-      - run: npx napi artifacts --output-dir artifacts
-      - run: npm run build
+      - run: pnpm exec napi artifacts --output-dir artifacts
+      - run: pnpm run build
       - name: Pack
         run: |
           mkdir -p ../packages
@@ -125,12 +126,12 @@ jobs:
       id-token: write # npm provenance
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-          cache: npm
-          cache-dependency-path: durable-workflow-ts/package-lock.json
+          cache: pnpm
       - name: Check the tag against package.json
         run: |
           version=$(node -p 'require("./package.json").version')
@@ -138,17 +139,17 @@ jobs:
             echo "tag ${GITHUB_REF_NAME} does not match package.json version ${version}" >&2
             exit 1
           fi
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           path: durable-workflow-ts/artifacts
           pattern: bindings-*
-      - run: npx napi artifacts --output-dir artifacts
-      - run: npm run build
+      - run: pnpm exec napi artifacts --output-dir artifacts
+      - run: pnpm run build
       # Publishes each `npm/<platform>` package, then adds them to
       # optionalDependencies; the main package goes last, so it never
       # points at a platform package that is not on the registry.
-      - run: npx napi pre-publish -t npm
+      - run: pnpm exec napi pre-publish -t npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"

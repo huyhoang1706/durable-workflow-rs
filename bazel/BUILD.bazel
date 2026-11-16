@@ -1,0 +1,10 @@
+load(":typescript.bzl", "NAPI_TRIPLES")
+
+# `//bazel:linux-x64-gnu`, ...: the target platform, as the addon's file name spells it.
+[
+    config_setting(
+        name = triple,
+        constraint_values = constraints,
+    )
+    for triple, constraints in NAPI_TRIPLES.items()
+]

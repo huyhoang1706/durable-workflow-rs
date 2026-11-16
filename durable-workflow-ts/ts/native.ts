@@ -1,7 +1,7 @@
 // Loads the Node-API addon. In order:
 //
 // 1. DURABLE_NATIVE, a path to a `.node` file;
-// 2. `durable.<platform>.node` next to `ts/` and `dist/`, which `npm run
+// 2. `durable.<platform>.node` next to `ts/` and `dist/`, which `pnpm run
 //    build:native` writes (a checkout of the repository);
 // 3. the prebuilt `@durable/typescript-<platform>` package, an optional
 //    dependency npm installs only on its platform.
@@ -187,7 +187,7 @@ function load(): NativeModule {
     throw new Error(
       `@durable/typescript has no native addon for ${triple}: \`${pkg}\` is not installed. ` +
         `Prebuilt addons exist for linux-x64-gnu, linux-arm64-gnu, darwin-x64, darwin-arm64 and win32-x64-msvc; ` +
-        `elsewhere, build one with \`npm run build:native\` in a checkout, or point DURABLE_NATIVE at it.`,
+        `elsewhere, build one with \`pnpm run build:native\` in a checkout, or point DURABLE_NATIVE at it.`,
       { cause: e },
     );
   }

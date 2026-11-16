@@ -1,6 +1,6 @@
 # The whole suite, as `./ci.sh` runs it locally: fmt, clippy, the Rust tests
 # (Postgres/Redis through testcontainers), the TypeScript SDK and its
-# example (Postgres/Redis containers started by scripts/with-servers.sh).
+# example with pnpm (Postgres/Redis containers started by scripts/with-servers.sh).
 name: CI
 
 on:
@@ -19,6 +19,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Coloured logs: the runner is not a terminal, so tools would otherwise print plain
+# text. Cargo and clippy read CARGO_TERM_COLOR (ci.sh passes it on to the test
+# binaries); Node tools (pnpm, Vitest, tsdown) read FORCE_COLOR; Bazel takes
+# --color=yes from `--config=ci` in .bazelrc.
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_COLOR: "1"
+
 jobs:
   ci:
     runs-on: ubuntu-24.04
@@ -29,18 +37,18 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # pnpm, at the version in package.json `packageManager`.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            durable-workflow-ts/package-lock.json
-            examples/typescript-onboarding/package-lock.json
+          cache: pnpm
       - run: ./ci.sh
 
-  # The Rust workspace through Bazel (docs/bazel.md), next to the Cargo job above.
-  # Both must pass: Cargo stays the source of truth, and this job proves the
-  # BUILD files and MODULE.bazel.lock still agree with Cargo.toml / Cargo.lock.
+  # The Rust workspace and the TypeScript SDK through Bazel (docs/bazel.md), next to
+  # the Cargo/pnpm job above. Both must pass: Cargo and pnpm stay the source of truth,
+  # and this job proves the BUILD files and MODULE.bazel.lock still agree with
+  # Cargo.toml / Cargo.lock and pnpm-lock.yaml.
   bazel:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
