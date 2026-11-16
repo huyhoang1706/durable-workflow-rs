@@ -14,7 +14,6 @@ test = false
 doctest = false
 
 [dependencies]
-durable-memory.workspace = true
 durable-runtime.workspace = true
 durable-sm.workspace = true
 durable-spi.workspace = true

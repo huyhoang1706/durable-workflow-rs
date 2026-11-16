@@ -11,6 +11,14 @@ use durable_spi::{Backend, Run, RunId, RunStatus};
 use durable_testkit::{ManualClock, t0};
 use serde_json::{Value, json};
 
+/// The in-memory slots around an in-memory SQLite store.
+pub fn memory_backend(clock: Arc<ManualClock>) -> Backend {
+    durable_memory::builder_with_clock(clock)
+        .store(durable_sqlite::SqliteStore::in_memory())
+        .build()
+        .expect("memory backend is complete")
+}
+
 pub struct Harness {
     pub clock: Arc<ManualClock>,
     pub backend: Backend,
@@ -21,7 +29,7 @@ pub struct Harness {
 impl Harness {
     pub fn new() -> Self {
         let clock = ManualClock::new(t0());
-        let backend = durable_memory::backend_with_clock(clock.clone());
+        let backend = memory_backend(clock.clone());
         let client = Client::new(backend.clone());
         Self {
             clock,

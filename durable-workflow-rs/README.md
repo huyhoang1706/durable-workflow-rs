@@ -24,7 +24,7 @@ async fn send_email(mailer: Dep<dyn Mailer>, to: String, subject: String) -> Res
 }
 ```
 
-Features: `memory` (default), `macros` (default), `postgres`, `redis`, `standalone`, `observable` (local JSON logs +
+Features: `memory` (default), `macros` (default), `sqlite`, `postgres`, `redis`, `standalone`, `observable` (local JSON logs +
 spans), `otel` (opt-in OpenTelemetry), `reqwest` / `sqlx` (`ClassifyError` impls).
 
 Examples: [`examples/embedded-axum`](../examples/embedded-axum) (an existing axum app that shares its sqlx pool and

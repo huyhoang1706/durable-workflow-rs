@@ -813,7 +813,7 @@ impl durable_spi::Observer for CommitCounter {
 async fn steps_that_finish_together_are_committed_together() {
     const N: usize = 100;
     let clock = durable_testkit::ManualClock::new(durable_testkit::t0());
-    let mut backend = durable_memory::backend_with_clock(clock.clone());
+    let mut backend = memory_backend(clock.clone());
     let commits = Arc::new(CommitCounter::default());
     backend.observer = commits.clone();
     let mut h = Harness::with_backend(clock, backend);

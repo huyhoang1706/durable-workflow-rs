@@ -33,7 +33,7 @@ impl JsBackend {
     #[napi(factory)]
     pub fn memory() -> Self {
         Self {
-            inner: durable_memory::backend(),
+            inner: durable_workflow::memory::backend(),
         }
     }
 
@@ -117,7 +117,7 @@ impl ConnectOptions {
                 "`{name}` only applies to a `postgres://` backend"
             )));
         }
-        let mut backend = durable_memory::backend();
+        let mut backend = durable_workflow::memory::backend();
         if let Some(ns) = self.namespace()? {
             backend.namespace = ns;
         }
@@ -351,7 +351,7 @@ impl JsWorker {
     ) -> Result<Value> {
         let run_id = parse_run_id(&run_id)?;
         let history = from_json("history", history)?;
-        let worker = self.build(durable_memory::backend())?;
+        let worker = self.build(durable_workflow::memory::backend())?;
         let replay = worker
             .replay(&workflow, run_id, input, history)
             .await

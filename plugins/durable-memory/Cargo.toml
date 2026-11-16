@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 durable-spi.workspace = true
-durable-sqlite.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 futures.workspace = true

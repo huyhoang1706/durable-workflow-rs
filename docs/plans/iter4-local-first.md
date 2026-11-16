@@ -26,8 +26,8 @@ Decisions confirmed with the user:
 - **DuckDB is a set of OpenTelemetry exporters**, as sketched in iteration 2 and the [backlog](../BACKLOG.md):
   span, log and metric exporters plugged into `OtelConfig`. The runtime does not change. The `duckdb` feature pulls
   in the `otel` feature, so it stays out of `default` and `standalone`.
-- **`MemoryStore` is removed.** The memory backend keeps its in-process queue, pub/sub, cache, rate limiter and
-  streams, and uses SQLite in `:memory:` mode for the store. There is then one embedded store implementation to
+- **`MemoryStore` is removed.** `durable-memory` keeps its in-process queue, pub/sub, cache, rate limiter and
+  streams and holds no store; the SDKs' memory backend pairs them with SQLite in `:memory:` mode. There is then one embedded store implementation to
   maintain instead of two.
 - **In scope:** `sqlite://` URLs in both SDKs and the CLI, `DURABLE_{TRACES,LOGS,METRICS}=duckdb`, an example and
   docs.
@@ -104,11 +104,14 @@ never stale-false) says whether waits it no longer lists must be deleted. Four r
 
 ## Part B: remove `MemoryStore`
 
-- Delete `plugins/durable-memory/src/store.rs`. `durable-memory` depends on `durable-sqlite`, and `builder()` in
-  `plugins/durable-memory/src/lib.rs` uses `SqliteStore::in_memory()`.
-- `backend()` and `backend_with_clock()` keep their signatures, so their callers do not change: the tests of
-  `durable-runtime`, `durable-api`, `durable-otel` and the Rust SDK, the `tiny_steps` and `llm-streaming` examples,
-  and `durable-workflow-ts/src/worker.rs`.
+- Delete `plugins/durable-memory/src/store.rs`. `durable-memory` holds no store and does not depend on
+  `durable-sqlite`: like `durable-redis` it offers the slots around the store (`MemoryParts`, `parts()`), plus
+  `builder()` / `builder_with_clock()`, a `BackendBuilder` with every slot but the store filled.
+- A crate that wants a whole in-memory backend depends on `durable-sqlite` itself and adds
+  `.store(SqliteStore::in_memory())`: the tests of `durable-runtime`, `durable-api` and `durable-otel`.
+- The Rust SDK keeps `durable_workflow::memory::backend()` and `backend_with_clock()`: its `memory` feature now
+  turns on a new `sqlite` feature (`durable_workflow::sqlite`), and `src/memory.rs` composes the two. Its tests, the
+  `tiny_steps` and `llm-streaming` examples and `durable-workflow-ts/src/worker.rs` go through it.
 - `plugins/durable-memory/tests/conformance.rs` drops `store_conformance!`; it now runs in `durable-sqlite`.
 - `crates/durable-runtime/tests/streaming.rs` builds a backend by hand with `MemoryStore::new()`; it switches to
   `SqliteStore::in_memory()` (a new dev-dependency on `durable-sqlite`).
