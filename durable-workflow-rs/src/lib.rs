@@ -1,9 +1,10 @@
 //! Durable workflows for Rust that adapt to your infrastructure.
 //!
 //! This facade re-exports the runtime and, behind features, the backends:
-//! `memory` (default; dev and tests), `sqlite`, `postgres`, `redis`. Observability is
-//! opt-in: `observable` (local JSON logs and spans, no extra services) and
-//! `otel` (OpenTelemetry over OTLP).
+//! `memory` and `sqlite` (default; together the in-memory backend for dev and
+//! tests), `postgres`, `redis`. Observability is opt-in: `observable` (local
+//! JSON logs and spans, no extra services) and `otel` (OpenTelemetry over
+//! OTLP).
 
 pub use durable_runtime::*;
 pub use durable_spi as core;

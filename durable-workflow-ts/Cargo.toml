@@ -18,7 +18,7 @@ durable-runtime.workspace = true
 durable-sm.workspace = true
 durable-spi.workspace = true
 # `connect`: a backend from URLs (Postgres store, optional Redis).
-durable-workflow = { path = "../durable-workflow-rs", default-features = false, features = ["memory", "postgres", "redis"] }
+durable-workflow = { path = "../durable-workflow-rs", default-features = false, features = ["memory", "sqlite", "postgres", "redis"] }
 async-trait.workspace = true
 chrono.workspace = true
 napi = { version = "3", default-features = false, features = ["napi6", "serde-json", "async"] }

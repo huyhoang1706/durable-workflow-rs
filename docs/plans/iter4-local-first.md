@@ -109,8 +109,9 @@ never stale-false) says whether waits it no longer lists must be deleted. Four r
   `builder()` / `builder_with_clock()`, a `BackendBuilder` with every slot but the store filled.
 - A crate that wants a whole in-memory backend depends on `durable-sqlite` itself and adds
   `.store(SqliteStore::in_memory())`: the tests of `durable-runtime`, `durable-api` and `durable-otel`.
-- The Rust SDK keeps `durable_workflow::memory::backend()` and `backend_with_clock()`: its `memory` feature now
-  turns on a new `sqlite` feature (`durable_workflow::sqlite`), and `src/memory.rs` composes the two. Its tests, the
+- The Rust SDK keeps `durable_workflow::memory::backend()` and `backend_with_clock()`: `src/memory.rs` composes the two when
+  both the `memory` feature and a new `sqlite` feature (`durable_workflow::sqlite`) are on, and both are in
+  `default`. `memory` alone is the slots only, so Postgres with the in-memory queue does not compile SQLite. Its tests, the
   `tiny_steps` and `llm-streaming` examples and `durable-workflow-ts/src/worker.rs` go through it.
 - `plugins/durable-memory/tests/conformance.rs` drops `store_conformance!`; it now runs in `durable-sqlite`.
 - `crates/durable-runtime/tests/streaming.rs` builds a backend by hand with `MemoryStore::new()`; it switches to
@@ -118,7 +119,7 @@ never stale-false) says whether waits it no longer lists must be deleted. Four r
 
 Consequences:
 
-- The Rust SDK's default `memory` feature now compiles the bundled SQLite.
+- The Rust SDK's default features now compile the bundled SQLite (the `sqlite` feature); `memory` alone does not.
 - The "memory" store is much slower than a `HashMap`. Every query is a round trip to the thread sqlx runs the
   connection on (about 27 µs), and the first cut cost 582 µs/step sequential and 468 µs/step for 64 runs at once in
   `tiny_steps` (from 40 and 7). Asked whether to keep `MemoryStore` (the fallback under Risks), the user chose to
