@@ -106,3 +106,40 @@ async fn two_pools_on_one_file_never_lose_a_signal() {
     let stored = cli.load_events(run.id, 0).await.unwrap();
     assert_eq!(stored.last().unwrap().seq, seq);
 }
+
+/// Event payloads come back exactly as written: replay compares them with
+/// what the live run saw, so a float that loses its last bit is a
+/// non-determinism.
+#[tokio::test]
+async fn floats_round_trip_exactly() {
+    let store = SqliteStore::in_memory();
+    let run = store
+        .create_run(new_run("wf", None))
+        .await
+        .unwrap()
+        .run()
+        .clone();
+    // Deterministic spread of doubles across magnitudes (a 64-bit LCG).
+    let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+    let floats: Vec<f64> = (0..2000)
+        .map(|_| {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        })
+        .chain([0.38469844796156083, 0.41282563130334116, 1e-300, 1.7976931348623157e308])
+        .collect();
+    let mut c = Commit::new(run.id, 1, t0());
+    c.events = vec![EventKind::RunSucceeded {
+        output: json!(floats),
+    }];
+    store.commit(c).await.unwrap();
+    let back = store.get_run(run.id).await.unwrap().unwrap().output.unwrap();
+    let events = store.load_events(run.id, 0).await.unwrap();
+    let EventKind::RunSucceeded { output } = &events[1].kind else {
+        panic!("{:?}", events[1].kind)
+    };
+    for (i, v) in floats.iter().enumerate() {
+        assert_eq!(back[i].as_f64(), Some(*v), "run output, float {i}");
+        assert_eq!(output[i].as_f64(), Some(*v), "event, float {i}");
+    }
+}

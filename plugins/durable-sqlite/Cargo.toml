@@ -9,7 +9,9 @@ durable-spi.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# Exact float parsing: stored JSON text must read back bit for bit, or replay
+# sees a different number than the live run did.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["sync", "time"] }
 uuid.workspace = true
