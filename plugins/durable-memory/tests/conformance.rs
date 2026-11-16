@@ -7,7 +7,6 @@ async fn make_queue() -> Arc<dyn Queue> {
     Arc::new(MemoryQueue::new())
 }
 
-// The store is durable-sqlite's in-memory mode; its conformance runs there.
 durable_testkit::queue_conformance!(make_queue());
 
 use durable_memory::{MemoryCache, MemoryPubSub, MemoryRateLimiter};
