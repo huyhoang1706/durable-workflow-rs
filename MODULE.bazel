@@ -51,11 +51,29 @@ crate.annotation(
 
 # rules_rs 0.2.4 unions sqlx-core features requested by sqlx-macros-core, which is in
 # Cargo.lock but not built (no `macros` feature), so sqlx-core gets `offline` and
-# `any` while Cargo leaves them off. sqlx-postgres must match or it does not compile.
+# `any` while Cargo leaves them off. The sqlx drivers must match or they do not compile.
 crate.annotation(
     crate = "sqlx-postgres",
     crate_features = [
         "any",
         "offline",
     ],
+)
+
+crate.annotation(
+    crate = "sqlx-sqlite",
+    crate_features = [
+        "any",
+        "offline",
+    ],
+)
+
+# libsqlite3-sys (sqlx-sqlite, bundled): its build script compiles SQLite with the
+# hermetic C toolchain, but reads CARGO_MANIFEST_DIR with env!(), which bakes the
+# sandbox's absolute path into the script and fails rules_rust's working-directory
+# check. The patch reads it at run time instead, as rules_rs does for objc-sys.
+crate.annotation(
+    crate = "libsqlite3-sys",
+    gen_build_script = "on",
+    patches = ["//bazel/patches:libsqlite3-sys-manifest-dir.patch"],
 )

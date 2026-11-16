@@ -1,0 +1,2 @@
+# Patches applied to third-party crates by `crate.annotation` in MODULE.bazel.
+exports_files(glob(["*.patch"]))

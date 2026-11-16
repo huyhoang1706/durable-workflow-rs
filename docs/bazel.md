@@ -169,10 +169,14 @@ files are picked up by globs.
 
 ## Workarounds in `MODULE.bazel`
 
-- `sqlx-postgres` gets the `any` and `offline` features. rules_rs 0.2.4 unions the `sqlx-core` features that
-  `sqlx-macros-core` requests even though that crate is only in `Cargo.lock` and never built, so `sqlx-core`
-  is compiled with them and `sqlx-postgres` has to match. Remove the annotation once rules_rs resolves features
-  like Cargo.
+- `sqlx-postgres` and `sqlx-sqlite` get the `any` and `offline` features. rules_rs 0.2.4 unions the `sqlx-core`
+  features that `sqlx-macros-core` requests even though that crate is only in `Cargo.lock` and never built, so
+  `sqlx-core` is compiled with them and the drivers have to match. Remove the annotations once rules_rs resolves
+  features like Cargo.
+- `libsqlite3-sys` (bundled SQLite, for `durable-sqlite`) is patched by
+  `bazel/patches/libsqlite3-sys-manifest-dir.patch`. Its build script embeds `env!("CARGO_MANIFEST_DIR")`, the
+  sandbox's absolute path, which rules_rust rejects ("compiled Rust output … embeds the absolute working
+  directory"); the patch reads the variable at run time instead. Re-check the patch when the crate is upgraded.
 - `aws-lc-sys` (reqwest → rustls → aws-lc-rs) runs its own build script, compiled with the hermetic C toolchain.
   rules_rs also offers a fully hermetic replacement built from the `aws-lc` Bazel module
   (`@rules_rs//3rd_party/aws-lc-sys:include.MODULE.bazel`); it has not been tried here yet.
