@@ -183,6 +183,38 @@ async fn a_step_streams_chunks_in_order_then_the_stream_closes_with_the_run() {
     assert!(streams[0].closed, "the stream is closed once the run ends");
 }
 
+/// A worker killed after the terminal commit but before it closed the run's
+/// streams leaves its lease unacked. The redelivery finds the run finished
+/// and closes the streams, so readers do not wait forever.
+#[tokio::test]
+async fn a_redelivered_finished_run_closes_its_streams() {
+    let mut h = Harness::new();
+    // No worker yet: the start item stays queued, as an unacked lease would.
+    let id = h.start("tokens", json!(["a"])).await;
+    let streams = h.backend.streams.clone().unwrap();
+    streams
+        .append(
+            id,
+            "tokens",
+            vec![durable_spi::NewChunk::data("gen", 1, json!("a"))],
+        )
+        .await
+        .unwrap();
+    let mut c = durable_spi::Commit::new(id, 1, t0());
+    c.events = vec![EventKind::RunSucceeded { output: json!("a") }];
+    h.backend.store.commit(c).await.unwrap();
+    assert!(!streams.info(id, "tokens").await.unwrap().unwrap().closed);
+
+    h.spawn(token_worker(&h));
+    h.eventually("the stream closes", || {
+        let streams = streams.clone();
+        async move { streams.info(id, "tokens").await.unwrap().unwrap().closed }
+    })
+    .await;
+    // The finished run was not executed again.
+    assert_eq!(h.client.events(id).await.unwrap().len(), 2);
+}
+
 #[tokio::test]
 async fn a_reader_can_resume_after_a_cursor() {
     let mut h = Harness::new();

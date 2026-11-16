@@ -541,17 +541,26 @@ async fn streaming_steps_finish_with_correct_output_despite_worker_kills() {
             }
         }
         assert_eq!(text, streamed_text(n as i64), "run {n}");
-        let info = backend
-            .streams
-            .as_ref()
-            .unwrap()
-            .info(*id, "tokens")
-            .await
-            .unwrap();
-        assert!(
-            info.is_some_and(|i| i.closed),
-            "run {n}: stream closed at the end"
-        );
+        // A worker killed right after the terminal commit leaves the stream
+        // open; the redelivery after its lease expires closes it.
+        let start = Instant::now();
+        loop {
+            let info = backend
+                .streams
+                .as_ref()
+                .unwrap()
+                .info(*id, "tokens")
+                .await
+                .unwrap();
+            if info.is_some_and(|i| i.closed) {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(15),
+                "run {n}: stream closed at the end"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
     w3.shutdown().await;
 }

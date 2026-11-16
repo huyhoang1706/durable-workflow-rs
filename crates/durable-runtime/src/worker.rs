@@ -663,6 +663,8 @@ async fn poison(sh: &Shared, run_id: RunId) -> durable_spi::Result<Outcome> {
         return Ok(Outcome::Finished);
     };
     if run.status.is_terminal() {
+        // As in `engine::execute`: close what a crashed worker left open.
+        close_run_streams(&sh.backend, run_id).await;
         return Ok(Outcome::Finished);
     }
     let mut c = Commit::new(run_id, run.last_seq, sh.backend.clock.now());

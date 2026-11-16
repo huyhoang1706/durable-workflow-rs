@@ -168,6 +168,9 @@ pub(crate) async fn execute(
         .await?
         .ok_or_else(|| Error::NotFound(format!("run {run_id}")))?;
     if run.status.is_terminal() {
+        // A worker that died between the terminal commit and closing the
+        // streams left its lease unacked; this redelivery finishes the job.
+        close_run_streams(&env.backend, run_id).await;
         return Ok(Outcome::Finished);
     }
     // Every execution of a run continues the trace its start opened.
