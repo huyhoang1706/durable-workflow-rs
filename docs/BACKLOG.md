@@ -1,10 +1,10 @@
 # Backlog
 
-Deferred work, grouped by area. Each entry says where it came from: [iter1](plans/iter1.md), [iter2](plans/iter2.md) or [iter3](plans/iter3-sansio-core.md).
+Deferred work, grouped by area. Each entry says where it came from: [iter1](plans/iter1.md), [iter2](plans/iter2.md), [iter3](plans/iter3-sansio-core.md) or [iter4](plans/iter4-local-first.md).
 
 ## Observability
 
-- **DuckDB observability store** (`plugins/durable-duckdb`), from iter2.
+- **DuckDB observability store** (`plugins/durable-duckdb`), from iter2. Planned in [iter4](plans/iter4-local-first.md), except the CLI queries.
   - A local, zero-infra sink for spans, logs and metrics, written to a `.duckdb` file.
   - Plugged in through `OtelConfig` programmatic exporters (`.span_exporter`, `.log_exporter`, `.metric_exporter`), so the runtime needs no changes.
   - Add `durable traces|logs` CLI queries, for example all spans of a run and the logs of a step attempt.
