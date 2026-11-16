@@ -123,17 +123,30 @@ async fn floats_round_trip_exactly() {
     let mut x: u64 = 0x2545_f491_4f6c_dd1d;
     let floats: Vec<f64> = (0..2000)
         .map(|_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (x >> 11) as f64 / (1u64 << 53) as f64
         })
-        .chain([0.38469844796156083, 0.41282563130334116, 1e-300, 1.7976931348623157e308])
+        .chain([
+            0.38469844796156083,
+            0.41282563130334116,
+            1e-300,
+            1.7976931348623157e308,
+        ])
         .collect();
     let mut c = Commit::new(run.id, 1, t0());
     c.events = vec![EventKind::RunSucceeded {
         output: json!(floats),
     }];
     store.commit(c).await.unwrap();
-    let back = store.get_run(run.id).await.unwrap().unwrap().output.unwrap();
+    let back = store
+        .get_run(run.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .output
+        .unwrap();
     let events = store.load_events(run.id, 0).await.unwrap();
     let EventKind::RunSucceeded { output } = &events[1].kind else {
         panic!("{:?}", events[1].kind)
