@@ -4,7 +4,7 @@ use durable_sqlite::SqliteStore;
 
 async fn versions(store: &SqliteStore) -> Vec<i64> {
     sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
-        .fetch_all(store.pool())
+        .fetch_all(&mut *store.acquire().await.unwrap())
         .await
         .unwrap()
 }
@@ -38,7 +38,7 @@ async fn connect_accepts_urls_and_creates_the_file() {
     store.migrate().await.unwrap();
     assert!(path.exists());
     let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-        .fetch_one(store.pool())
+        .fetch_one(&mut *store.acquire().await.unwrap())
         .await
         .unwrap();
     assert_eq!(mode, "wal");

@@ -1,6 +1,7 @@
 # Iteration 4: local-first development (SQLite store, DuckDB observability)
 
-> Status: in progress. Part A (`plugins/durable-sqlite`) is built; Parts B–E are planned.
+> Status: in progress. Parts A (`plugins/durable-sqlite`) and B (the memory backend on in-memory SQLite) are built;
+> Parts C–E are planned.
 
 ## Context
 
@@ -51,7 +52,10 @@ impl SqliteStore {
     pub async fn connect(url: &str) -> Result<Self>;
     pub async fn open(path: impl AsRef<Path>) -> Result<Self>;
     pub fn from_pool(pool: SqlitePool) -> Self;
-    pub fn pool(&self) -> &SqlitePool;
+    /// `None` for `in_memory()`, which holds one connection instead of a pool.
+    pub fn pool(&self) -> Option<&SqlitePool>;
+    /// A connection for raw SQL (the in-memory one, held exclusively until dropped).
+    pub async fn acquire(&self) -> Result<impl DerefMut<Target = SqliteConnection> + '_>;
     /// Create or upgrade the tables. Safe to call from every process at boot.
     pub async fn migrate(&self) -> Result<()>;
     /// A private in-memory database; connects and migrates on first use.
@@ -60,10 +64,10 @@ impl SqliteStore {
 ```
 
 - `in_memory()` is synchronous and lazy on purpose. `durable_memory::backend()` and the TypeScript SDK's
-  `Backend.memory()` are synchronous and may be called outside a Tokio runtime, so the pool and the migrations are
-  set up through a `tokio::sync::OnceCell` on the first store call.
-- Every connection to `:memory:` is its own database, so the in-memory pool has exactly one connection with no idle
-  timeout and no maximum lifetime.
+  `Backend.memory()` are synchronous and may be called outside a Tokio runtime, so the connection is opened and
+  migrated on the first store call.
+- Every connection to `:memory:` is its own database, so the in-memory store has exactly one connection. As built in
+  Part B it holds it in a `tokio::sync::Mutex` instead of a one-connection pool: a pooled release spawns a task.
 - Migrations use their own `schema_migrations` table, as in Postgres, and are serialized by `BEGIN IMMEDIATE`.
 
 **Translating the Postgres SQL.** `plugins/durable-postgres/src/store.rs` is the reference; `commit` keeps its order
@@ -82,8 +86,13 @@ of operations.
 These carry over unchanged: the partial unique index with `ON CONFLICT … WHERE … DO NOTHING RETURNING`, the
 row-value comparison `(created_at, id) < (…)` for paging, and `same_waits` (unchanged waits are not rewritten).
 
-With a one-connection pool, a query inside a transaction must go through the transaction, never through
-`&self.pool`: the second connection it would wait for does not exist.
+With one connection, a query inside a transaction must go through the transaction, never through a second call to
+the store: the connection it would wait for is the one already held.
+
+**Plain commits** (added in Part B). A commit that registers no wait or hook and does not end the run (most step
+results and timers) cannot consume a signal or generate an event, so it skips reading the run, its waits and its
+inbox: the version check moves into `UPDATE … WHERE last_seq = ? RETURNING`, and `runs.has_waits` (stale-true,
+never stale-false) says whether waits it no longer lists must be deleted. Four round trips instead of seven.
 
 **Tests** (`plugins/durable-sqlite/tests/`, no Docker):
 
@@ -107,9 +116,14 @@ With a one-connection pool, a query inside a transaction must go through the tra
 Consequences:
 
 - The Rust SDK's default `memory` feature now compiles the bundled SQLite.
-- The "memory" store is slower than a `HashMap`: each commit is a SQL round trip through sqlx's connection thread.
-  Re-run `cargo run --release -p durable-workflow --example tiny_steps` and `npm run bench`, and record the new
-  numbers next to the old ones (97k steps/s in Rust) in [iteration 3](iter3-sansio-core.md).
+- The "memory" store is much slower than a `HashMap`. Every query is a round trip to the thread sqlx runs the
+  connection on (about 27 µs), and the first cut cost 582 µs/step sequential and 468 µs/step for 64 runs at once in
+  `tiny_steps` (from 40 and 7). Asked whether to keep `MemoryStore` (the fallback under Risks), the user chose to
+  optimize instead: holding the connection and plain commits bring it to about 280 and 260 µs/step, about 3k steps/s
+  (TypeScript `npm run bench`: 484 and 293 µs/step). Fan-outs are unchanged. The numbers are recorded in
+  [iteration 3](iter3-sansio-core.md), "Memory store on SQLite".
+- Tried and dropped: sending a plain commit's statements as one multi-statement query. sqlx steps through them one by
+  one, so it saved nothing.
 
 ## Part C: `sqlite://` in the SDKs and the CLI
 
@@ -228,7 +242,8 @@ One commit per step, each leaving `./ci.sh` green:
 - **Joining logs to spans.** `opentelemetry-appender-tracing` 0.33 must put the trace and span ids on log records.
   If it does not, the log exporter copies `durable.run_id` from the enclosing span into the record's attributes.
 - **Throughput of the memory backend.** It drops with Part B. If the drop hurts the test suite or the benchmark
-  baseline, the fallback is to keep `MemoryStore` as a `#[doc(hidden)]` test double.
+  baseline, the fallback is to keep `MemoryStore` as a `#[doc(hidden)]` test double. *Outcome:* the test suites
+  take about the same time; the benchmark drop was taken, with the optimizations above (Part B).
 
 ## Out of scope (recorded in docs/BACKLOG.md)
 

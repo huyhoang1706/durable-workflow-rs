@@ -1,19 +1,21 @@
-//! In-memory reference implementation of every `durable-spi` plugin trait.
-//! For tests and local development; nothing survives a restart.
+//! In-memory implementations of the `durable-spi` plugin traits: queue,
+//! pub/sub, cache, rate limiter and streams. The store is SQLite in
+//! `:memory:` mode ([`SqliteStore::in_memory`]), so there is one embedded
+//! store implementation. For tests and local development; nothing survives a
+//! restart.
 
 mod gcra;
 mod queue;
 mod services;
-mod store;
 mod streams;
 
 use std::sync::Arc;
 
 use durable_spi::{Backend, Clock, SystemClock};
+use durable_sqlite::SqliteStore;
 
 pub use queue::MemoryQueue;
 pub use services::{MemoryCache, MemoryPubSub, MemoryRateLimiter};
-pub use store::MemoryStore;
 pub use streams::MemoryStreams;
 
 /// A complete in-memory backend.
@@ -30,7 +32,7 @@ fn builder(clock: Arc<dyn Clock>) -> durable_spi::BackendBuilder {
     Backend::builder()
         .streams(MemoryStreams::new(clock.clone()))
         .clock(clock)
-        .store(MemoryStore::new())
+        .store(SqliteStore::in_memory())
         .queue(MemoryQueue::new())
         .pubsub(MemoryPubSub::new())
         .cache(MemoryCache::new())

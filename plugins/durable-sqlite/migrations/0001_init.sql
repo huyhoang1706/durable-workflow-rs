@@ -16,6 +16,9 @@ CREATE TABLE runs (
     -- The runnable index: when the run next needs a worker.
     wake_at             INTEGER,
     awaiting            TEXT    NOT NULL DEFAULT '[]',
+    -- Whether the run has rows in `waits`, so commits that register none can
+    -- skip reading them. May be stale-true, never stale-false.
+    has_waits           INTEGER NOT NULL DEFAULT 0,
     concurrency_key     TEXT,
     throttle_key        TEXT,
     deadline_at         INTEGER,

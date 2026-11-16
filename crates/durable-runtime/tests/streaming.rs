@@ -9,9 +9,10 @@ use std::{
 };
 
 use common::*;
-use durable_memory::{MemoryCache, MemoryPubSub, MemoryQueue, MemoryStore};
+use durable_memory::{MemoryCache, MemoryPubSub, MemoryQueue};
 use durable_runtime::*;
 use durable_spi::{Backend, EventKind, RunId};
+use durable_sqlite::SqliteStore;
 use durable_testkit::{ManualClock, t0};
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -398,7 +399,7 @@ async fn an_expired_stream_reads_as_empty_and_the_reader_ends() {
 async fn without_a_stream_store_writes_are_noops_and_the_run_still_succeeds() {
     let clock = ManualClock::new(t0());
     let backend = Backend::builder()
-        .store(MemoryStore::new())
+        .store(SqliteStore::in_memory())
         .queue(MemoryQueue::new())
         .pubsub(MemoryPubSub::new())
         .cache(MemoryCache::new())

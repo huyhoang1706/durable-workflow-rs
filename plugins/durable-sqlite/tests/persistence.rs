@@ -28,7 +28,11 @@ async fn runs_and_events_survive_reopening_the_file() {
         output: json!({"ok": true}),
     }];
     store.commit(c).await.unwrap();
-    store.pool().close().await;
+    store
+        .pool()
+        .expect("a file database has a pool")
+        .close()
+        .await;
     drop(store);
 
     let store = open(&path).await;

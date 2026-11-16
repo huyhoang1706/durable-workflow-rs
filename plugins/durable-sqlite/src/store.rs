@@ -1,16 +1,23 @@
-use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    ops::{Deref, DerefMut},
+    path::Path,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use durable_spi::*;
 use serde_json::Value;
 use sqlx::{
-    QueryBuilder, Row, Sqlite, SqlitePool, Transaction,
+    ConnectOptions, Connection, QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool,
+    pool::PoolConnection,
     sqlite::{
         SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
     },
 };
-use tokio::sync::OnceCell;
+use tokio::sync::{MappedMutexGuard, Mutex, MutexGuard};
 use uuid::Uuid;
 
 use crate::{
@@ -18,18 +25,50 @@ use crate::{
     sql::{be, from_json, from_us, id, json, opt_from_json, opt_from_us, parse_id, us},
 };
 
-type Tx = Transaction<'static, Sqlite>;
-
 /// How long a writer waits for another connection (or process) to release
 /// the database's write lock before failing with `SQLITE_BUSY`.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct SqliteStore {
-    pool: SqlitePool,
-    /// Set by [`in_memory`](Self::in_memory): the tables are created on the
-    /// first store call instead of by an explicit [`migrate`](Self::migrate).
-    lazy_migrate: Option<Arc<OnceCell<()>>>,
+    source: Source,
+}
+
+#[derive(Clone)]
+enum Source {
+    /// A file database: readers run concurrently under WAL.
+    Pool(SqlitePool),
+    /// [`SqliteStore::in_memory`]: one connection, opened and migrated on
+    /// first use. Every connection to `:memory:` is its own database, and a
+    /// pool would cost a task spawn per release, so it is held directly.
+    Memory(Arc<Mutex<Option<SqliteConnection>>>),
+}
+
+/// A connection for one store call: pooled, or the in-memory one, held
+/// exclusively until dropped.
+enum Conn<'a> {
+    Pool(PoolConnection<Sqlite>),
+    Memory(MappedMutexGuard<'a, SqliteConnection>),
+}
+
+impl Deref for Conn<'_> {
+    type Target = SqliteConnection;
+
+    fn deref(&self) -> &SqliteConnection {
+        match self {
+            Conn::Pool(c) => c,
+            Conn::Memory(c) => c,
+        }
+    }
+}
+
+impl DerefMut for Conn<'_> {
+    fn deref_mut(&mut self) -> &mut SqliteConnection {
+        match self {
+            Conn::Pool(c) => c,
+            Conn::Memory(c) => c,
+        }
+    }
 }
 
 impl SqliteStore {
@@ -80,64 +119,61 @@ impl SqliteStore {
     /// pool a busy timeout so concurrent writers wait instead of failing.
     pub fn from_pool(pool: SqlitePool) -> Self {
         Self {
-            pool,
-            lazy_migrate: None,
+            source: Source::Pool(pool),
         }
     }
 
     /// A private in-memory database; connects and migrates on first use.
     ///
-    /// Synchronous so it can be built outside a Tokio runtime. Every
-    /// connection to `:memory:` is its own database, so the pool holds exactly
-    /// one connection that is never closed for idleness or age: the data
-    /// lives as long as the store (and its clones).
+    /// Synchronous so it can be built outside a Tokio runtime. The data lives
+    /// as long as the store (and its clones). Store calls take turns on its
+    /// single connection.
     pub fn in_memory() -> Self {
-        let options = SqliteConnectOptions::new()
-            .in_memory(true)
-            .foreign_keys(true);
-        // Without an idle timeout, a maximum lifetime or `min_connections`,
-        // the pool spawns no maintenance task, so this needs no runtime.
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .min_connections(0)
-            .idle_timeout(None)
-            .max_lifetime(None)
-            .test_before_acquire(false)
-            .connect_lazy_with(options);
         Self {
-            pool,
-            lazy_migrate: Some(Arc::new(OnceCell::new())),
+            source: Source::Memory(Arc::new(Mutex::new(None))),
         }
     }
 
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+    /// The pool of a file database; `None` for [`in_memory`](Self::in_memory)
+    /// (use [`acquire`](Self::acquire)).
+    pub fn pool(&self) -> Option<&SqlitePool> {
+        match &self.source {
+            Source::Pool(pool) => Some(pool),
+            Source::Memory(_) => None,
+        }
+    }
+
+    /// A connection for raw SQL. An in-memory store has one, so the store
+    /// waits until this is dropped.
+    pub async fn acquire(&self) -> Result<impl DerefMut<Target = SqliteConnection> + '_> {
+        self.conn().await
     }
 
     /// Create or upgrade the tables. Safe to call from every process at boot.
     pub async fn migrate(&self) -> Result<()> {
-        migrate::run(&self.pool).await
+        migrate::run(&mut *self.conn().await?).await
     }
 
-    async fn ready(&self) -> Result<()> {
-        if let Some(cell) = &self.lazy_migrate {
-            cell.get_or_try_init(|| migrate::run(&self.pool)).await?;
+    async fn conn(&self) -> Result<Conn<'_>> {
+        match &self.source {
+            Source::Pool(pool) => Ok(Conn::Pool(pool.acquire().await.map_err(be)?)),
+            Source::Memory(cell) => {
+                let mut guard = cell.lock().await;
+                if guard.is_none() {
+                    let mut conn = SqliteConnectOptions::new()
+                        .in_memory(true)
+                        .foreign_keys(true)
+                        .connect()
+                        .await
+                        .map_err(be)?;
+                    migrate::run(&mut conn).await?;
+                    *guard = Some(conn);
+                }
+                Ok(Conn::Memory(MutexGuard::map(guard, |c| {
+                    c.as_mut().expect("connected above")
+                })))
+            }
         }
-        Ok(())
-    }
-
-    /// A write transaction. SQLite has one writer, so taking the write lock
-    /// up front stands in for Postgres' `SELECT … FOR UPDATE` and avoids
-    /// upgrading a read transaction (which fails at once under WAL).
-    async fn begin(&self) -> Result<Tx> {
-        self.ready().await?;
-        self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(be)
-    }
-
-    /// The pool, for reads outside a transaction.
-    async fn reader(&self) -> Result<&SqlitePool> {
-        self.ready().await?;
-        Ok(&self.pool)
     }
 }
 
@@ -187,17 +223,17 @@ fn run_from_row(r: &SqliteRow) -> std::result::Result<Run, sqlx::Error> {
     })
 }
 
-async fn load_run(tx: &mut Tx, run_id: RunId) -> Result<Run> {
+async fn load_run(tx: &mut SqliteConnection, run_id: RunId) -> Result<Run> {
     let row = sqlx::query("SELECT * FROM runs WHERE id = ?")
         .bind(id(run_id))
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(be)?
         .ok_or_else(|| Error::NotFound(format!("run {run_id}")))?;
     run_from_row(&row).map_err(be)
 }
 
-async fn load_live_run(tx: &mut Tx, run_id: RunId) -> Result<Run> {
+async fn load_live_run(tx: &mut SqliteConnection, run_id: RunId) -> Result<Run> {
     let run = load_run(tx, run_id).await?;
     if run.status.is_terminal() {
         return Err(Error::InvalidState(format!(
@@ -210,7 +246,7 @@ async fn load_live_run(tx: &mut Tx, run_id: RunId) -> Result<Run> {
 
 /// Append events `(seq, kind as JSON)` in one statement.
 async fn insert_events(
-    tx: &mut Tx,
+    tx: &mut SqliteConnection,
     run_id: RunId,
     at: DateTime<Utc>,
     events: Vec<(i64, String)>,
@@ -227,7 +263,7 @@ async fn insert_events(
                 .push_bind(kind);
         })
         .build()
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(be)?;
     Ok(())
@@ -235,7 +271,7 @@ async fn insert_events(
 
 /// `DELETE FROM {table} WHERE run_id = ? AND {column} IN (…)`.
 async fn delete_in(
-    tx: &mut Tx,
+    tx: &mut SqliteConnection,
     table: &str,
     column: &str,
     run_id: RunId,
@@ -250,13 +286,13 @@ async fn delete_in(
     for v in values {
         list.push_bind(v.to_string());
     }
-    q.push(")").build().execute(&mut **tx).await.map_err(be)?;
+    q.push(")").build().execute(&mut *tx).await.map_err(be)?;
     Ok(())
 }
 
 /// Put a signal in the inbox under the write lock; report whether to wake.
 async fn deliver_tx(
-    tx: &mut Tx,
+    tx: &mut SqliteConnection,
     run: &Run,
     name: &str,
     payload: Value,
@@ -271,7 +307,7 @@ async fn deliver_tx(
     .bind(name)
     .bind(json(&payload)?)
     .bind(us(at))
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await
     .map_err(be)?;
 
@@ -280,7 +316,7 @@ async fn deliver_tx(
     }
     let waits = sqlx::query("SELECT kind, name FROM waits WHERE run_id = ?")
         .bind(id(run.id))
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut *tx)
         .await
         .map_err(be)?;
     let satisfied = waits
@@ -294,7 +330,7 @@ async fn deliver_tx(
         .bind(us(wake))
         .bind(us(at))
         .bind(id(run.id))
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(be)?;
     Ok(Some(run.queue_item(wake)))
@@ -302,11 +338,11 @@ async fn deliver_tx(
 
 /// Make the stored open waits equal `waits`. Most commits (step results,
 /// timers) leave them unchanged, so they are only rewritten on a change.
-async fn sync_waits(tx: &mut Tx, run_id: RunId, waits: &[WaitReg]) -> Result<()> {
+async fn sync_waits(tx: &mut SqliteConnection, run_id: RunId, waits: &[WaitReg]) -> Result<()> {
     let stored =
         sqlx::query("SELECT key, kind, name, filter, timeout_at FROM waits WHERE run_id = ?")
             .bind(id(run_id))
-            .fetch_all(&mut **tx)
+            .fetch_all(&mut *tx)
             .await
             .map_err(be)?
             .iter()
@@ -327,7 +363,7 @@ async fn sync_waits(tx: &mut Tx, run_id: RunId, waits: &[WaitReg]) -> Result<()>
     }
     sqlx::query("DELETE FROM waits WHERE run_id = ?")
         .bind(id(run_id))
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(be)?;
     if waits.is_empty() {
@@ -356,10 +392,93 @@ async fn sync_waits(tx: &mut Tx, run_id: RunId, waits: &[WaitReg]) -> Result<()>
                 .push_bind(timeout);
         })
         .build()
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(be)?;
     Ok(())
+}
+
+/// A commit that registers no wait or hook and does not end the run: most
+/// step results and timers. It can neither consume a signal nor generate an
+/// event, so its outcome is known before reading the run.
+fn is_plain(c: &Commit) -> bool {
+    c.waits.is_empty()
+        && c.hooks.is_empty()
+        && !c.events.iter().any(|k| {
+            matches!(
+                k,
+                EventKind::RunSucceeded { .. }
+                    | EventKind::RunFailed { .. }
+                    | EventKind::RunCancelled { .. }
+                    | EventKind::HookDisposed { .. }
+            )
+        })
+}
+
+/// [`is_plain`] commits in four round trips to sqlx's connection thread
+/// (begin, update, insert, commit) instead of seven: it does not read the
+/// run, its waits or its inbox. The version check moves into the `UPDATE`.
+async fn commit_plain(tx: &mut SqliteConnection, c: &Commit) -> Result<CommitOutcome> {
+    let first = c.expected_seq as i64 + 1;
+    let last_seq = c.expected_seq as i64 + c.events.len() as i64;
+    let row = sqlx::query(
+        "UPDATE runs SET status = ?, last_seq = ?, wake_at = ?, awaiting = ?, last_error = ?,
+                         updated_at = ?
+         WHERE id = ? AND last_seq = ? AND status NOT IN ('succeeded', 'failed', 'cancelled')
+         RETURNING cancel_requested_at, has_waits",
+    )
+    .bind(c.status.as_str())
+    .bind(last_seq)
+    .bind(c.wake_at.map(us))
+    .bind(json(&c.awaiting)?)
+    .bind(&c.last_error)
+    .bind(us(c.at))
+    .bind(id(c.run_id))
+    .bind(c.expected_seq as i64)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(be)?;
+    let Some(row) = row else {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM runs WHERE id = ?)")
+            .bind(id(c.run_id))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(be)?;
+        return Err(if exists {
+            Error::Conflict
+        } else {
+            Error::NotFound(format!("run {}", c.run_id))
+        });
+    };
+    let cancel_requested = row
+        .try_get::<Option<i64>, _>("cancel_requested_at")
+        .map_err(be)?
+        .is_some();
+    // The waits this commit no longer lists: rare, right after one resolved.
+    if row.try_get::<bool, _>("has_waits").map_err(be)? {
+        for sql in [
+            "DELETE FROM waits WHERE run_id = ?",
+            "UPDATE runs SET has_waits = 0 WHERE id = ?",
+        ] {
+            sqlx::query(sql)
+                .bind(id(c.run_id))
+                .execute(&mut *tx)
+                .await
+                .map_err(be)?;
+        }
+    }
+    let events = c
+        .events
+        .iter()
+        .zip(first..)
+        .map(|(kind, seq)| Ok((seq, json(kind)?)))
+        .collect::<Result<Vec<_>>>()?;
+    insert_events(tx, c.run_id, c.at, events).await?;
+    Ok(CommitOutcome {
+        last_seq: last_seq as u64,
+        generated: vec![],
+        cancel_requested,
+    })
 }
 
 /// A wait as stored. Timestamps compare at microsecond precision.
@@ -424,7 +543,8 @@ fn contains(data: &Value, filter: &Value) -> bool {
 impl Store for SqliteStore {
     async fn create_run(&self, new: NewRun) -> Result<CreateOutcome> {
         let run_id = Uuid::now_v7();
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
         let inserted = sqlx::query(
             "INSERT INTO runs (id, namespace, workflow, idempotency_key, status, input, last_seq,
                                wake_at, concurrency_key, throttle_key, deadline_at, trace_context,
@@ -474,7 +594,7 @@ impl Store for SqliteStore {
     async fn get_run(&self, run_id: RunId) -> Result<Option<Run>> {
         let row = sqlx::query("SELECT * FROM runs WHERE id = ?")
             .bind(id(run_id))
-            .fetch_optional(self.reader().await?)
+            .fetch_optional(&mut *self.conn().await?)
             .await
             .map_err(be)?;
         row.map(|r| run_from_row(&r).map_err(be)).transpose()
@@ -502,7 +622,7 @@ impl Store for SqliteStore {
         }
         let rows = q
             .build()
-            .fetch_all(self.reader().await?)
+            .fetch_all(&mut *self.conn().await?)
             .await
             .map_err(be)?;
         rows.iter().map(|r| run_from_row(r).map_err(be)).collect()
@@ -514,7 +634,7 @@ impl Store for SqliteStore {
         )
         .bind(id(run_id))
         .bind(after_seq as i64)
-        .fetch_all(self.reader().await?)
+        .fetch_all(&mut *self.conn().await?)
         .await
         .map_err(be)?;
         if rows.is_empty() && self.get_run(run_id).await?.is_none() {
@@ -534,7 +654,13 @@ impl Store for SqliteStore {
     }
 
     async fn commit(&self, c: Commit) -> Result<CommitOutcome> {
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
+        if is_plain(&c) {
+            let out = commit_plain(&mut tx, &c).await?;
+            tx.commit().await.map_err(be)?;
+            return Ok(out);
+        }
         let run = load_run(&mut tx, c.run_id).await?;
         if run.last_seq != c.expected_seq || run.status.is_terminal() {
             return Err(Error::Conflict);
@@ -678,7 +804,8 @@ impl Store for SqliteStore {
             };
         sqlx::query(
             "UPDATE runs SET status = ?, last_seq = ?, wake_at = ?, awaiting = ?, output = ?,
-                             error = ?, last_error = ?, updated_at = ?
+                             error = ?, last_error = ?, updated_at = ?,
+                             has_waits = EXISTS (SELECT 1 FROM waits WHERE run_id = ?)
              WHERE id = ?",
         )
         .bind(status.as_str())
@@ -689,6 +816,7 @@ impl Store for SqliteStore {
         .bind(&error)
         .bind(&c.last_error)
         .bind(us(c.at))
+        .bind(id(run.id))
         .bind(id(run.id))
         .execute(&mut *tx)
         .await
@@ -708,7 +836,8 @@ impl Store for SqliteStore {
         payload: Value,
         at: DateTime<Utc>,
     ) -> Result<Option<QueueItem>> {
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
         let run = load_live_run(&mut tx, run_id).await?;
         let item = deliver_tx(&mut tx, &run, name, payload, at).await?;
         tx.commit().await.map_err(be)?;
@@ -723,7 +852,8 @@ impl Store for SqliteStore {
         at: DateTime<Utc>,
     ) -> Result<Option<QueueItem>> {
         let not_found = || Error::NotFound(format!("hook {token}"));
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
         let run_id: String =
             sqlx::query_scalar("SELECT run_id FROM hooks WHERE namespace = ? AND token = ?")
                 .bind(namespace)
@@ -748,7 +878,8 @@ impl Store for SqliteStore {
         data: Value,
         at: DateTime<Utc>,
     ) -> Result<Vec<QueueItem>> {
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
         // SQL narrows the waits by name; the filter is matched here.
         let open: Vec<(String, String)> = sqlx::query(
             "SELECT w.run_id, w.key, w.filter FROM waits w JOIN runs r ON r.id = w.run_id
@@ -826,7 +957,8 @@ impl Store for SqliteStore {
         reason: Option<String>,
         at: DateTime<Utc>,
     ) -> Result<Option<QueueItem>> {
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
         let run = load_live_run(&mut tx, run_id).await?;
         let wake = matches!(run.status, RunStatus::Waiting | RunStatus::Pending)
             .then(|| run.wake_at.map_or(at, |w| w.min(at)));
@@ -847,7 +979,8 @@ impl Store for SqliteStore {
     }
 
     async fn retry_run(&self, run_id: RunId, at: DateTime<Utc>) -> Result<QueueItem> {
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
         let run = load_run(&mut tx, run_id).await?;
         if run.status != RunStatus::Failed {
             return Err(Error::InvalidState(format!(
@@ -898,7 +1031,7 @@ impl Store for SqliteStore {
         .bind(namespace)
         .bind(us(before))
         .bind(limit as i64)
-        .fetch_all(self.reader().await?)
+        .fetch_all(&mut *self.conn().await?)
         .await
         .map_err(be)?;
         rows.iter()
@@ -917,7 +1050,8 @@ impl Store for SqliteStore {
         if defs.is_empty() {
             return Ok(());
         }
-        let mut tx = self.begin().await?;
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
         for d in defs {
             sqlx::query(
                 "INSERT INTO workflow_definitions (namespace, name, definition) VALUES (?, ?, ?)
@@ -943,7 +1077,7 @@ impl Store for SqliteStore {
         )
         .bind(namespace)
         .bind(name)
-        .fetch_optional(self.reader().await?)
+        .fetch_optional(&mut *self.conn().await?)
         .await
         .map_err(be)?;
         v.map(|v| from_json(&v).map_err(be)).transpose()

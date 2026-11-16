@@ -1,5 +1,5 @@
 use durable_spi::Result;
-use sqlx::SqlitePool;
+use sqlx::{Connection, SqliteConnection};
 
 use crate::sql::be;
 
@@ -8,8 +8,8 @@ const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.s
 
 /// Apply pending migrations. `BEGIN IMMEDIATE` takes the database's single
 /// write lock, so concurrent migrations from several processes serialize.
-pub(crate) async fn run(pool: &SqlitePool) -> Result<()> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
+pub(crate) async fn run(conn: &mut SqliteConnection) -> Result<()> {
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(be)?;
     sqlx::raw_sql(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version    INTEGER PRIMARY KEY,
