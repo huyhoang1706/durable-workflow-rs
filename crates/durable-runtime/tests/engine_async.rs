@@ -402,8 +402,10 @@ async fn disposing_a_hook_releases_its_token_while_the_run_lives_on() {
     let a = h.start("disposer", json!(null)).await;
     h.suspended(a).await;
     h.client.resume_hook("reusable", json!(7)).await.unwrap();
+    // Waiting, not just a future wake_at: a running run carries one too (its
+    // lease grace), before the dispose is committed.
     h.until(a, "sleep after dispose", |r| {
-        r.wake_at.is_some_and(|t| t > h.clock.now())
+        r.status == RunStatus::Waiting && r.wake_at.is_some_and(|t| t > h.clock.now())
     })
     .await;
 
