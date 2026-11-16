@@ -76,16 +76,29 @@ impl SqliteStore {
     /// busy timeout, foreign keys on. Accepts `sqlite://path`, `sqlite:path`
     /// and the query options of [`SqliteConnectOptions`]; `sqlite::memory:`
     /// gives [`in_memory`](Self::in_memory).
+    ///
+    /// This does not create the tables: call [`migrate`](Self::migrate)
+    /// before the first store call, or it fails with "no such table". (Only
+    /// [`in_memory`](Self::in_memory) migrates by itself.)
+    ///
+    /// A new file is created readable and writable by its owner only (Unix
+    /// mode `0600`): it holds workflow inputs, outputs and hook tokens. An
+    /// existing file keeps its permissions.
     pub async fn connect(url: &str) -> Result<Self> {
         if is_memory_url(url) {
             return Ok(Self::in_memory());
         }
         let options = SqliteConnectOptions::from_str(url).map_err(be)?;
+        if !is_read_only_url(url) {
+            create_private(options.get_filename());
+        }
         Self::connect_with(options).await
     }
 
-    /// As [`connect`](Self::connect), from a file path.
+    /// As [`connect`](Self::connect), from a file path. Call
+    /// [`migrate`](Self::migrate) before use.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
+        create_private(path.as_ref());
         Self::connect_with(SqliteConnectOptions::new().filename(path)).await
     }
 
@@ -186,13 +199,52 @@ fn is_busy(e: &sqlx::Error) -> bool {
     matches!(code.map(|c| c & 0xff), Some(5 | 6))
 }
 
-fn is_memory_url(url: &str) -> bool {
+/// The path and the query parameters of a `sqlite:` URL.
+fn split_url(url: &str) -> (&str, impl Iterator<Item = (&str, &str)>) {
     let rest = url
         .strip_prefix("sqlite://")
         .or_else(|| url.strip_prefix("sqlite:"))
         .unwrap_or(url);
-    let path = rest.split('?').next().unwrap_or_default();
-    path == ":memory:" || rest.contains("mode=memory")
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let params = query
+        .split('&')
+        .map(|p| p.split_once('=').unwrap_or((p, "")));
+    (path, params)
+}
+
+fn is_memory_url(url: &str) -> bool {
+    let (path, mut params) = split_url(url);
+    path == ":memory:" || params.any(|p| p == ("mode", "memory"))
+}
+
+/// `mode=ro` or `immutable`: SQLite will not create the file.
+fn is_read_only_url(url: &str) -> bool {
+    split_url(url).1.any(|(k, v)| match k {
+        "mode" => v == "ro",
+        "immutable" => matches!(v, "true" | "1"),
+        _ => false,
+    })
+}
+
+/// Create the database file, if it is missing, for its owner only. SQLite
+/// would create it with the process umask (usually world-readable), and it
+/// holds workflow inputs, outputs and hook tokens. The `-wal` and `-shm`
+/// files take the permissions of the database file.
+///
+/// Best effort: an existing file is left as it is, and any other failure
+/// (a missing directory, say) is reported by the connect that follows.
+fn create_private(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path);
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 fn run_from_row(r: &SqliteRow) -> std::result::Result<Run, sqlx::Error> {
@@ -1099,8 +1151,31 @@ mod tests {
         ] {
             assert!(is_memory_url(url), "{url}");
         }
-        for url in ["sqlite://./durable.db", "sqlite:durable.db?mode=rwc"] {
+        for url in [
+            "sqlite://./durable.db",
+            "sqlite:durable.db?mode=rwc",
+            // `mode=memory` only counts as a query parameter.
+            "sqlite:///data/mode=memory.db",
+            "sqlite://x.db?vfs=mode=memory",
+        ] {
             assert!(!is_memory_url(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn read_only_urls() {
+        for url in [
+            "sqlite://x.db?mode=ro",
+            "sqlite:x.db?cache=shared&immutable=true",
+        ] {
+            assert!(is_read_only_url(url), "{url}");
+        }
+        for url in [
+            "sqlite://x.db",
+            "sqlite://mode=ro.db",
+            "sqlite:x.db?mode=rwc",
+        ] {
+            assert!(!is_read_only_url(url), "{url}");
         }
     }
 

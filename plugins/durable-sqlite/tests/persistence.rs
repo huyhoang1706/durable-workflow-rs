@@ -156,3 +156,47 @@ async fn floats_round_trip_exactly() {
         assert_eq!(output[i].as_f64(), Some(*v), "event, float {i}");
     }
 }
+
+/// The file holds inputs, outputs and hook tokens: a new one is private to
+/// its owner, and so are the WAL files SQLite derives from it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_new_database_file_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = common::TempDir::new();
+    let mode = |name: &str| {
+        let meta = std::fs::metadata(dir.file(name)).unwrap();
+        meta.permissions().mode() & 0o777
+    };
+
+    let store = open(&dir.file("opened.db")).await;
+    store.create_run(new_run("wf", None)).await.unwrap();
+    for name in ["opened.db", "opened.db-wal", "opened.db-shm"] {
+        assert_eq!(mode(name), 0o600, "{name}");
+    }
+
+    let url = format!("sqlite://{}", dir.file("connected.db").display());
+    SqliteStore::connect(&url).await.unwrap();
+    assert_eq!(mode("connected.db"), 0o600);
+
+    // An existing file keeps the permissions its owner chose.
+    drop(store);
+    let shared = dir.file("shared.db");
+    std::fs::write(&shared, b"").unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o640)).unwrap();
+    open(&shared).await;
+    assert_eq!(mode("shared.db"), 0o640);
+}
+
+/// `mode=memory` in a file name is not the query option: the run is on disk.
+#[tokio::test]
+async fn a_path_containing_mode_memory_is_a_file() {
+    let dir = common::TempDir::new();
+    let path = dir.file("mode=memory.db");
+    let store = SqliteStore::connect(&format!("sqlite://{}", path.display()))
+        .await
+        .unwrap();
+    assert!(store.pool().is_some());
+    assert!(path.exists());
+}
