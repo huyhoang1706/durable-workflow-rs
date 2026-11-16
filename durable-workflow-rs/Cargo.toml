@@ -6,10 +6,12 @@ license.workspace = true
 description = "Durable workflows for Rust that adapt to your infrastructure."
 
 [features]
-default = ["memory", "macros"]
+default = ["memory", "sqlite", "macros"]
 macros = ["dep:durable-macros"]
-# The in-memory backend: durable-memory's slots around an in-memory SQLite store.
-memory = ["dep:durable-memory", "sqlite"]
+# In-process queue, pub/sub, cache, rate limiter and streams: no store.
+memory = ["dep:durable-memory"]
+# The SQLite store. With `memory`, also `memory::backend()`: a whole backend in
+# this process, on an in-memory SQLite store.
 sqlite = ["dep:durable-sqlite"]
 postgres = ["dep:durable-postgres"]
 redis = ["dep:durable-redis"]

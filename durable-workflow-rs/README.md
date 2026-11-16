@@ -24,8 +24,12 @@ async fn send_email(mailer: Dep<dyn Mailer>, to: String, subject: String) -> Res
 }
 ```
 
-Features: `memory` (default), `macros` (default), `sqlite`, `postgres`, `redis`, `standalone`, `observable` (local JSON logs +
-spans), `otel` (opt-in OpenTelemetry), `reqwest` / `sqlx` (`ClassifyError` impls).
+Features: `memory`, `sqlite` and `macros` (the defaults), `postgres`, `redis`, `standalone`, `observable` (local JSON
+logs + spans), `otel` (opt-in OpenTelemetry), `reqwest` / `sqlx` (`ClassifyError` impls).
+
+`memory` is the in-process queue, pub/sub, cache and streams; `sqlite` is the SQLite store. `memory::backend()` needs
+both. For Postgres with the in-memory queue and no SQLite in the build, use
+`default-features = false, features = ["macros", "memory", "postgres"]`.
 
 Examples: [`examples/embedded-axum`](../examples/embedded-axum) (an existing axum app that shares its sqlx pool and
 mounts the ops API), [`examples/standalone-worker`](../examples/standalone-worker) (a dedicated worker with a CPU-bound
