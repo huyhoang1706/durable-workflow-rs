@@ -22,7 +22,9 @@ tracing = "0.1"
 rand = "0.9"
 rand_chacha = "0.9"
 parking_lot = "0.12"
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "uuid", "chrono", "json", "migrate"] }
+# Each crate enables the driver it needs (`postgres`, `sqlite`), so a SQLite-only
+# build does not compile the Postgres driver.
 redis = { version = "1.7", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
 
@@ -31,3 +33,4 @@ durable-sm = { path = "crates/durable-sm" }
 durable-runtime = { path = "crates/durable-runtime" }
 durable-testkit = { path = "crates/durable-testkit" }
 durable-memory = { path = "plugins/durable-memory" }
+durable-sqlite = { path = "plugins/durable-sqlite" }

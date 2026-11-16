@@ -9,7 +9,7 @@ durable-spi.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
 tokio.workspace = true
 uuid.workspace = true
 

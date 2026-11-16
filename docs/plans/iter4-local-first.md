@@ -1,6 +1,6 @@
 # Iteration 4: local-first development (SQLite store, DuckDB observability)
 
-> Status: planned. Nothing here is built yet.
+> Status: in progress. Part A (`plugins/durable-sqlite`) is built; Parts B–E are planned.
 
 ## Context
 
