@@ -1,6 +1,11 @@
 # The whole suite, as `./ci.sh` runs it locally: fmt, clippy, the Rust tests
 # (Postgres/Redis through testcontainers), the TypeScript SDK and its
 # example (Postgres/Redis containers started by scripts/with-servers.sh).
+#
+# This is the pull-request stage: one target (x86_64-unknown-linux-gnu), so a
+# PR gets a fast answer. Pushes to main also build the TypeScript addon on
+# Linux x64, macOS arm64 and Windows x64, and release tags on every target:
+# see typescript-release.yml.
 name: CI
 
 on:
