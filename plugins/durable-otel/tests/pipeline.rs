@@ -90,7 +90,10 @@ async fn env(
 ) -> Env {
     let t = telemetry();
     let clock = ManualClock::new(t0());
-    let mut backend = durable_memory::backend_with_clock(clock.clone());
+    let mut backend = durable_memory::builder_with_clock(clock.clone())
+        .store(durable_sqlite::SqliteStore::in_memory())
+        .build()
+        .unwrap();
     backend.observer = t.observer.clone();
     let worker = register(
         Worker::builder(backend.clone())

@@ -27,6 +27,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 uuid.workspace = true
 durable-runtime.workspace = true
 durable-memory.workspace = true
+durable-sqlite.workspace = true
 durable-testkit.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 serde_json.workspace = true

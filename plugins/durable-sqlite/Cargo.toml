@@ -1,0 +1,21 @@
+[package]
+name = "durable-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+durable-spi.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+# Exact float parsing: stored JSON text must read back bit for bit, or replay
+# sees a different number than the live run did.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sqlx = { workspace = true, features = ["sqlite"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+durable-testkit.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

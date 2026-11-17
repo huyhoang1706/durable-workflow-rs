@@ -10,5 +10,5 @@ durable-api = { path = "../../crates/durable-api" }
 axum = "0.8"
 serde.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }

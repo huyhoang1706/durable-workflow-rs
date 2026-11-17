@@ -6,9 +6,13 @@ license.workspace = true
 description = "Durable workflows for Rust that adapt to your infrastructure."
 
 [features]
-default = ["memory", "macros"]
+default = ["memory", "sqlite", "macros"]
 macros = ["dep:durable-macros"]
+# In-process queue, pub/sub, cache, rate limiter and streams: no store.
 memory = ["dep:durable-memory"]
+# The SQLite store. With `memory`, also `memory::backend()`: a whole backend in
+# this process, on an in-memory SQLite store.
+sqlite = ["dep:durable-sqlite"]
 postgres = ["dep:durable-postgres"]
 redis = ["dep:durable-redis"]
 # `ClassifyError` impls for reqwest / sqlx errors.
@@ -26,6 +30,7 @@ durable-spi.workspace = true
 durable-runtime.workspace = true
 durable-macros = { path = "../crates/durable-macros", optional = true }
 durable-memory = { workspace = true, optional = true }
+durable-sqlite = { workspace = true, optional = true }
 durable-postgres = { path = "../plugins/durable-postgres", optional = true }
 durable-redis = { path = "../plugins/durable-redis", optional = true }
 durable-otel = { path = "../plugins/durable-otel", optional = true }
@@ -45,7 +50,7 @@ parking_lot.workspace = true
 redis.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
 testcontainers-modules.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 uuid.workspace = true

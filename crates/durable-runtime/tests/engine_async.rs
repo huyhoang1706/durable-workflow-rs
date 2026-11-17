@@ -402,8 +402,10 @@ async fn disposing_a_hook_releases_its_token_while_the_run_lives_on() {
     let a = h.start("disposer", json!(null)).await;
     h.suspended(a).await;
     h.client.resume_hook("reusable", json!(7)).await.unwrap();
+    // Waiting, not just a future wake_at: a running run carries one too (its
+    // lease grace), before the dispose is committed.
     h.until(a, "sleep after dispose", |r| {
-        r.wake_at.is_some_and(|t| t > h.clock.now())
+        r.status == RunStatus::Waiting && r.wake_at.is_some_and(|t| t > h.clock.now())
     })
     .await;
 
@@ -811,7 +813,7 @@ impl durable_spi::Observer for CommitCounter {
 async fn steps_that_finish_together_are_committed_together() {
     const N: usize = 100;
     let clock = durable_testkit::ManualClock::new(durable_testkit::t0());
-    let mut backend = durable_memory::backend_with_clock(clock.clone());
+    let mut backend = memory_backend(clock.clone());
     let commits = Arc::new(CommitCounter::default());
     backend.observer = commits.clone();
     let mut h = Harness::with_backend(clock, backend);

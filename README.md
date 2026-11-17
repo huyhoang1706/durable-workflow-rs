@@ -94,14 +94,17 @@ crates/               the shared engine, used by every SDK
   durable-testkit/    conformance suites for plugin authors, ManualClock, and the replay conformance corpus
                       every SDK must pass
 plugins/
-  durable-memory/     in-memory reference implementation (tests, dev)
+  durable-memory/     in-process Queue, PubSub, Cache, RateLimiter, Streams (tests, dev); no store, like durable-redis
+  durable-sqlite/     Store (sqlx), migrations: a file, or `:memory:` for the memory backend
   durable-postgres/   Store (sqlx), migrations
   durable-redis/      Queue (Lua), PubSub, Cache, RateLimiter, Streams
   durable-otel/       OpenTelemetry traces, metrics and logs (opt-in)
 examples/             embedded-axum, standalone-worker, llm-streaming (Rust); typescript-onboarding (TypeScript)
 ```
 
-Plugins depend only on `durable-spi`. `durable-runtime` depends only on `durable-spi` and `durable-sm`.
+Plugins depend only on `durable-spi`. `durable-memory` and `durable-redis` hold no runs; a backend pairs them with a
+store (the Rust SDK's `memory::backend()` uses `durable-sqlite` in `:memory:` mode).
+`durable-runtime` depends only on `durable-spi` and `durable-sm`.
 `durable-sm` depends on neither, and CI keeps it free of async runtimes so any language can embed it.
 
 ## Determinism rules
