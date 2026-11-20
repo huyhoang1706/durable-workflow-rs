@@ -459,17 +459,25 @@ async fn is_replaying_is_true_only_while_history_is_fed() {
     h.advance(3601);
     h.succeeded(id).await;
     let seen = seen.lock().clone();
-    // First execution: live. Second execution: `start` and `after_a` are
-    // replayed; `after_nap` is live.
+    // First execution: live. Every later execution replays `start` and
+    // `after_a`; `after_nap` runs once, live. Advancing the clock past the
+    // sleep also expires the first lease if the worker has not released it
+    // yet, so a redelivery can replay and be abandoned before the execution
+    // that finishes: more than one replay pass is allowed.
     assert_eq!(
-        seen,
-        [
-            ("start", false),
-            ("after_a", false),
-            ("start", true),
-            ("after_a", true),
-            ("after_nap", false),
-        ]
+        seen[..2],
+        [("start", false), ("after_a", false)],
+        "{seen:?}"
+    );
+    assert_eq!(seen.last(), Some(&("after_nap", false)), "{seen:?}");
+    let replayed = &seen[2..seen.len() - 1];
+    assert!(
+        !replayed.is_empty()
+            && replayed.len() % 2 == 0
+            && replayed
+                .chunks(2)
+                .all(|c| c == [("start", true), ("after_a", true)]),
+        "{seen:?}"
     );
 }
 
