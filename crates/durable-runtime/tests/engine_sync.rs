@@ -236,8 +236,10 @@ async fn sync_hook_dispose() {
     let a = h.start("disposer", json!(null)).await;
     h.suspended(a).await;
     h.client.resume_hook("sync-tok", json!(5)).await.unwrap();
+    // Waiting, not just a future wake_at: a running run carries one too (its
+    // lease grace), before the dispose is committed.
     h.until(a, "sleep after dispose", |r| {
-        r.wake_at.is_some_and(|t| t > h.clock.now())
+        r.status == RunStatus::Waiting && r.wake_at.is_some_and(|t| t > h.clock.now())
     })
     .await;
     assert!(h.client.resume_hook("sync-tok", json!(6)).await.is_err());

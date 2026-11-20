@@ -830,6 +830,7 @@ dependencies = [
  "durable-memory",
  "durable-runtime",
  "durable-spi",
+ "durable-sqlite",
  "durable-testkit",
  "futures",
  "http-body-util",
@@ -872,7 +873,6 @@ dependencies = [
  "durable-testkit",
  "futures",
  "parking_lot",
- "serde_json",
  "tokio",
  "uuid",
 ]
@@ -885,6 +885,7 @@ dependencies = [
  "durable-memory",
  "durable-runtime",
  "durable-spi",
+ "durable-sqlite",
  "durable-testkit",
  "opentelemetry",
  "opentelemetry-appender-tracing",
@@ -942,6 +943,7 @@ dependencies = [
  "durable-memory",
  "durable-sm",
  "durable-spi",
+ "durable-sqlite",
  "durable-testkit",
  "futures",
  "parking_lot",
@@ -986,6 +988,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "durable-sqlite"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "durable-spi",
+ "durable-testkit",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "durable-testkit"
 version = "0.1.0"
 dependencies = [
@@ -1007,7 +1024,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "durable-memory",
  "durable-runtime",
  "durable-sm",
  "durable-spi",
@@ -1036,6 +1052,7 @@ dependencies = [
  "durable-redis",
  "durable-runtime",
  "durable-spi",
+ "durable-sqlite",
  "durable-testkit",
  "futures",
  "parking_lot",
@@ -1946,6 +1963,7 @@ version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
 dependencies = [
+ "cc",
  "pkg-config",
  "vcpkg",
 ]

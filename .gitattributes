@@ -1,0 +1,4 @@
+# Check text files out with LF on every platform: the replay corpus
+# (crates/durable-testkit/corpus) is compared byte for byte with its canonical
+# form, and CRLF from core.autocrlf on Windows breaks that.
+* text=auto eol=lf

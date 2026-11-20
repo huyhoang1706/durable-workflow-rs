@@ -1,17 +1,12 @@
 use std::sync::Arc;
 
-use durable_memory::{MemoryQueue, MemoryStore};
-use durable_spi::{Queue, Store};
-
-async fn make_store() -> Arc<dyn Store> {
-    Arc::new(MemoryStore::new())
-}
+use durable_memory::MemoryQueue;
+use durable_spi::Queue;
 
 async fn make_queue() -> Arc<dyn Queue> {
     Arc::new(MemoryQueue::new())
 }
 
-durable_testkit::store_conformance!(make_store());
 durable_testkit::queue_conformance!(make_queue());
 
 use durable_memory::{MemoryCache, MemoryPubSub, MemoryRateLimiter};

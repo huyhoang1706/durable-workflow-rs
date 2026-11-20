@@ -21,7 +21,10 @@ struct Env {
 }
 
 async fn env() -> Env {
-    let backend = durable_memory::backend();
+    let backend = durable_memory::builder()
+        .store(durable_sqlite::SqliteStore::in_memory())
+        .build()
+        .unwrap();
     let worker = Worker::builder(backend.clone())
         .poll_interval(Duration::from_millis(20))
         .drain_timeout(Duration::from_millis(200))

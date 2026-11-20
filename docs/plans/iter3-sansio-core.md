@@ -941,11 +941,36 @@ The TypeScript binding gains the same way (`npm run bench`, release addon, Node 
 went from 1187 to 93 µs/step, now in line with its other scenarios (195 µs/step sequential, 76 µs/step for 500 runs
 at once), whose numbers are unchanged within noise.
 
+## Memory store on SQLite (iteration 4, Part B)
+
+[Iteration 4](iter4-local-first.md) replaced `MemoryStore` (a `HashMap` behind a lock) with in-memory SQLite
+(`SqliteStore::in_memory`), so there is one embedded store to maintain. The memory backend is now bound by the store:
+every query is a round trip to the thread sqlx runs the SQLite connection on (about 27 µs), and the commit of a
+step and the client's `get_run` take turns on the one connection.
+
+Rust, `cargo run --release -p durable-workflow --example tiny_steps`, 4 vCPUs, before and after on the same machine.
+"First cut" is the store as written for Part A (a one-connection pool, the same queries as Postgres); "after" adds
+the two optimizations of Part B: the in-memory store holds its connection instead of pooling it (a pooled release
+spawns a task, about 72 µs per call), and a commit that registers no wait or hook and does not end the run checks
+the version in its `UPDATE` instead of reading the run, its waits and its inbox (4 round trips instead of 7).
+
+| Scenario | `MemoryStore` | SQLite, first cut | SQLite, after |
+|---|---|---|---|
+| 1 run × 2000 sequential steps | 40 µs/step | 582 µs/step | 270–300 µs/step |
+| 500 runs × 20 steps, 64 at once | 7 µs/step | 468 µs/step | 250–270 µs/step |
+| 1 run, 2000 parallel steps | 21 µs/step | 16 µs/step | 16–18 µs/step |
+| 1 run, 2000 parallel steps 250 µs apart | 265 µs/step | 264 µs/step | 259–262 µs/step |
+
+TypeScript (`npm run bench`, release addon, Node 22.23), after: 484 µs/step sequential, 293 µs/step for 500 runs at
+once and 88 µs/step for `ctx.map` over 2000 items (from 195, 76 and 93 above). The main thread is at most 67% busy,
+so the store, not the binding, is the limit now. A fan-out barely changes: its results land in one batched commit.
+
 ## Open questions
 
 1. **Mixed-language workers**: can one worker host Rust and TS workflows at once? Nothing prevents it,
    because registration is by workflow name. Defer until someone asks.
 2. **Node threading**: tokio runs on its own threads and JS on the main thread. Step results cross
    via `ThreadsafeFunction`. Check that the throughput of many tiny steps is acceptable before P3 is called done.
-   **Answered in "S4 as built":** about 10k tiny steps/s per process on the memory backend (Rust: 97k). On Postgres
+   **Answered in "S4 as built":** about 10k tiny steps/s per process on the memory backend (Rust: 97k); since the
+   memory store moved to SQLite, about 3k (see "Memory store on SQLite"). On Postgres
    the store dominates, and the main thread is at most half busy.

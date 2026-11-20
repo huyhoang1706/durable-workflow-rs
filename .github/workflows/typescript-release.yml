@@ -1,22 +1,31 @@
-# Prebuilt addons for the TypeScript SDK.
+# Prebuilt addons for the TypeScript SDK, on more platforms than `ci.yml`.
 #
-# Every run builds the addon on each platform, runs the SDK's tests where
-# the runner can load it, packs the npm packages and smoke-tests them from a
-# clean project. Pushing a tag `typescript-v<version>` (the version in
-# durable-workflow-ts/package.json) also publishes them to npm: the platform
-# packages `@durable/typescript-<platform>` and then `@durable/typescript`,
-# which depends on them optionally. Publishing needs the NPM_TOKEN secret in
-# the `npm` environment.
-name: TypeScript release
+# The CI strategy has three stages, each wider than the one before:
+#
+# - Pull requests: `ci.yml` only, on one target (x86_64-unknown-linux-gnu):
+#   fmt, clippy, the Rust tests, the TypeScript SDK and its example. Nothing
+#   here runs, so a PR gets its answer fast.
+# - Pushes to main: this workflow on the core trio (Linux x64, macOS arm64,
+#   Windows x64). Each builds the release addon, runs the SDK's tests and the
+#   Rust crates that need no Docker, to catch path, line-ending and linker
+#   issues long before a release.
+# - Tags `typescript-v<version>` (the version in durable-workflow-ts/package.json)
+#   and manual runs: every target in package.json `napi.targets`, then the npm
+#   packages are packed and smoke-tested from a clean project. A tag also
+#   publishes them: the platform packages `@durable/typescript-<platform>` and
+#   then `@durable/typescript`, which depends on them optionally. Publishing
+#   needs the NPM_TOKEN secret in the `npm` environment.
+name: TypeScript addons
 
 on:
   push:
+    branches: [main]
     tags: ["typescript-v*"]
-  pull_request:
     paths:
       - durable-workflow-ts/**
       - crates/**
       - plugins/**
+      - Cargo.toml
       - Cargo.lock
       - pnpm-lock.yaml
       - .github/workflows/typescript-release.yml
@@ -25,42 +34,69 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: typescript-addons-${{ github.ref }}
+  # A newer push to main supersedes an older one; a tag always runs to the end.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 defaults:
   run:
     working-directory: durable-workflow-ts
 
 jobs:
+  # Picks the targets: the core trio for main, every target for a release.
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      release: ${{ steps.plan.outputs.release }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - id: plan
+        run: |
+          # `test`: the runner can load the addon, so the SDK's tests run.
+          # `core`: one of the trio, which also runs the Docker-free Rust tests.
+          # Linux builds run on the oldest supported Ubuntu, so the addon
+          # needs only that glibc (2.35). darwin-x64 is cross-compiled on Apple
+          # silicon, where nothing can load it.
+          all='[
+            {"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-22.04","test":true,"core":true},
+            {"target":"aarch64-apple-darwin","runner":"macos-15","test":true,"core":true},
+            {"target":"x86_64-pc-windows-msvc","runner":"windows-2022","test":true,"core":true},
+            {"target":"aarch64-unknown-linux-gnu","runner":"ubuntu-22.04-arm","test":true,"core":false},
+            {"target":"x86_64-apple-darwin","runner":"macos-15","test":false,"core":false}
+          ]'
+          if [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" = push ]; then
+            release=false
+            matrix=$(jq -c '{include: map(select(.core))}' <<<"$all")
+          else
+            # Tags and manual runs: the full matrix. Rust tests already ran on main.
+            release=true
+            matrix=$(jq -c '{include: map(.core = false)}' <<<"$all")
+          fi
+          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+          echo "release=$release" >>"$GITHUB_OUTPUT"
+          echo "release=$release matrix=$matrix"
+
   build:
     name: build ${{ matrix.target }}
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Linux builds run on the oldest supported Ubuntu, so the addon
-          # needs only that glibc (2.35).
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
-            test: true
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
-            test: true
-          - target: aarch64-apple-darwin
-            runner: macos-15
-            test: true
-          # Cross-compiled on Apple silicon; nothing here can load it.
-          - target: x86_64-apple-darwin
-            runner: macos-15
-            test: false
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2022
-            test: true
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # rust-toolchain.toml pins the Rust version, so the target must go to that
+      # toolchain, not to `stable`. Only the cross-compiled target needs it;
+      # adding the host target is a no-op.
+      - run: rustup toolchain install && rustup target add ${{ matrix.target }}
+        shell: bash
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
@@ -75,16 +111,27 @@ jobs:
       # The memory-backend tests: no Docker on macOS and Windows runners. The
       # Postgres/Redis cases skip without DURABLE_TEST_DATABASE_URL.
       - if: matrix.test
-        run: pnpm run typecheck && npm test
+        run: pnpm run typecheck && pnpm test
         shell: bash
-      - uses: actions/upload-artifact@v4
+      # The engine crates that need no Docker (AGENTS.md); the Postgres/Redis
+      # plugins, the CLI and the chaos suite stay on Linux in ci.yml.
+      - if: matrix.core
+        working-directory: .
+        run: >-
+          cargo test --all-features
+          -p durable-sm -p durable-spi -p durable-runtime
+          -p durable-testkit -p durable-memory -p durable-macros
+        shell: bash
+      - if: needs.plan.outputs.release == 'true'
+        uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}
           path: durable-workflow-ts/durable.*.node
           if-no-files-found: error
 
   package:
-    needs: build
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
