@@ -406,14 +406,25 @@ async fn throttle_spaces_out_run_starts() {
     let mut t = starts.lock().clone();
     t.sort();
     assert_eq!(t.len(), 6);
-    // No window of 1s (minus slack) may contain more than 2 starts.
+    // The queue claims a start every 500ms (2 per second, burst 1), so any 3
+    // claims span at least 1s. The test sees the step, not the claim: loading
+    // and committing the run in between takes a variable time on shared
+    // Postgres and Redis (the other chaos tests run alongside), and a slow
+    // first run can shorten a window by a few hundred ms. Without the
+    // throttle all 6 would start within a few ms. The queue conformance tests
+    // check the exact spacing.
     for window in t.windows(3) {
         let span = window[2].duration_since(window[0]);
         assert!(
-            span >= Duration::from_millis(900),
+            span >= Duration::from_millis(500),
             "3 starts within {span:?}"
         );
     }
+    let total = t[5].duration_since(t[0]);
+    assert!(
+        total >= Duration::from_millis(2000),
+        "6 starts within {total:?}"
+    );
     w.shutdown().await;
 }
 
