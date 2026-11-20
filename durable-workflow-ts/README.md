@@ -83,16 +83,25 @@ from steps, `watch`, and `retry` of a failed run. They are tracked in [docs/BACK
 
 ## Development
 
+The repository root is a pnpm workspace (this package and `examples/typescript-onboarding`, one `pnpm-lock.yaml`):
+
 ```bash
-npm ci && npm run build:native && npm run typecheck && npm test && npm run build
+pnpm install && pnpm run build:native && pnpm run typecheck && pnpm test && pnpm run build
 ```
 
 ```bash
-npm run test:servers   # also the Postgres/Redis cases, on throwaway containers
+pnpm run test:servers   # also the Postgres/Redis cases, on throwaway containers
 ```
 
 ```bash
-npm run build:native:release && npm run bench   # tiny-step throughput
+pnpm run build:native:release && pnpm run bench   # tiny-step throughput
+```
+
+The same checks run under Bazel, with the addon compiled from the Rust crates in the same build graph
+([docs/bazel.md](../docs/bazel.md)):
+
+```bash
+bazel test //durable-workflow-ts/...
 ```
 
 The tests replay the shared conformance corpus (`crates/durable-testkit/corpus`) through the native core, and a

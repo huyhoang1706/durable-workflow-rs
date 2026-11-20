@@ -1,0 +1,9 @@
+# The TypeScript packages. One lockfile (pnpm-lock.yaml) for both, which Bazel's
+# rules_js reads too (docs/bazel.md).
+packages:
+  - durable-workflow-ts
+  - examples/typescript-onboarding
+
+# No dependency needs an install script (the addon is built from Rust, not by
+# npm). rules_js requires the setting to be present.
+allowBuilds: {}

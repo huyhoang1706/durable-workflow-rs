@@ -1,8 +1,7 @@
 # Bazel integration: one build graph for Rust and TypeScript
 
-> Status: Phases 1 and 2 (Rust builds, tests, clippy, dependency checks) done on 2026-11-13; the user guide is
-> [`../bazel.md`](../bazel.md). Phase 3 (TypeScript) is a proposal, revised 2026-11-16; it and the later phases are
-> not started. Researched 2026-11-12. Items
+> Status: Phases 1 and 2 (Rust builds, tests, clippy, dependency checks) done on 2026-11-13, Phase 3 (TypeScript)
+> on 2026-11-16 (outcomes below); the user guide is [`../bazel.md`](../bazel.md). The later phases are not started. Researched 2026-11-12. Items
 > marked **(verify)** come from reading docs; the Phase 1/2 outcomes below settle the Rust ones.
 
 ## Phase 1 and 2 outcomes (2026-11-13)
@@ -28,6 +27,26 @@ What running it showed, where it differs from the sketch below:
 - `bazel test //... --test_tag_filters=-docker` runs 42 targets and the same 286 test cases as
   `cargo test --workspace --all-features` minus the container suites. The container suites were not run under
   Bazel yet (no Docker where this was built); the CI `bazel` job is their first run.
+
+## Phase 3 outcomes (2026-11-16)
+
+- **pnpm workspace.** `pnpm import` cannot read two `package-lock.json` files, so `pnpm-lock.yaml` comes from a fresh
+  `pnpm install`; every direct dependency resolved to the version the npm lockfiles had. rules_js needs
+  `allowBuilds` in `pnpm-workspace.yaml` even when no package has install scripts.
+- **Vitest under rules_js works sandboxed**, `pool: "forks"` included; no `sh_test` fallback. The SDK runs the same
+  85 cases as `pnpm test` (78 passed, 7 skipped without servers; 85 passed with them) and the example its 8.
+- **Typecheck** is `tsc_test` from the npm `typescript` 7 package with the existing `tsconfig.json`, not
+  `ts_project`; a type error fails it.
+- **`:dist` is byte-identical to `pnpm run build`**, but only unsandboxed: tsgo, which writes the `.d.mts`, follows
+  the sandbox's symlinks to the execroot and then reports it generated nothing.
+- **The `libc++` concern** is settled by `cc_runtime_linkage = "static"` on the shared library (rules_rs's
+  rules_rust has the attribute), not by staging the runtime next to the copied `.node`.
+- **The corpus** reaches the TypeScript tests as `//crates/durable-testkit:corpus_bin` (`copy_to_bin`): rules_js
+  refuses data that is not in `bazel-bin`, and `test/corpus.ts` needs no change.
+- **Not verified where this was built:** the Bazel-built addon itself. The hermetic toolchain's glibc and the
+  `bats` toolchain come from GitHub archives the build sandbox could not download, so the TypeScript tests ran
+  against the Cargo-built addon swapped in locally, and the CI `bazel` job is the first run with the real one.
+  The Apple silicon check from "Done when" is open too.
 
 ## Context
 
@@ -404,8 +423,8 @@ against, because a glob that matches nothing fails silently; set `allow_empty = 
 
 ### Phase 3: TypeScript (2 to 3 days)
 
-> Proposal, revised 2026-11-16 after reading `@napi-rs/cli` 3.10.12 (the version in `package.json`). Not started.
-> It replaces the first sketch of this phase; the pnpm decision (decision 1) and the Vitest spike are unchanged.
+> Done on 2026-11-16; see "Phase 3 outcomes" at the top for where it differs from this plan, which was revised the
+> same day after reading `@napi-rs/cli` 3.10.12 (the version in `package.json`).
 
 Goal: `bazel test //durable-workflow-ts/... //examples/typescript-onboarding/...` builds the addon, typechecks,
 runs Vitest and packs the SDK, with the Rust and TypeScript halves in one graph. Editing a `.ts` file compiles no

@@ -1,3 +1,4 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@crates//durable-testkit:data.bzl", "aliases", "all_crate_deps", "crate_data")
 load("//bazel:rust.bzl", "CORPUS_DATA", "durable_rust_crate")
 
@@ -19,4 +20,12 @@ filegroup(
     name = "corpus",
     srcs = glob(["corpus/*.json"]),
     visibility = ["//visibility:public"],
+)
+
+# The same files in the output tree, for the TypeScript SDK's tests: rules_js runs
+# them from bazel-bin and only reads inputs that are there.
+copy_to_bin(
+    name = "corpus_bin",
+    srcs = [":corpus"],
+    visibility = ["//durable-workflow-ts:__pkg__"],
 )

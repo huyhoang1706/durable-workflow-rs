@@ -1,0 +1,59 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//examples/typescript-onboarding:typescript/package_json.bzl", typescript_bin = "bin")
+load("@npm//examples/typescript-onboarding:vitest/package_json.bzl", vitest_bin = "bin")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel:rust.bzl", "DOCKER_TEST_TAGS")
+
+# node_modules/@durable/typescript is `//durable-workflow-ts:pkg` (`workspace:*`): the
+# built SDK with its addon, as a consumer installs it.
+npm_link_all_packages(name = "node_modules")
+
+# Every file in exactly one js_library (rules_js copies sources into bazel-bin).
+js_library(
+    name = "srcs",
+    srcs = glob(["src/**/*.ts"]) + [
+        "package.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+    ],
+)
+
+js_library(
+    name = "tests",
+    srcs = glob(["test/**/*.ts"]),
+)
+
+# `npm run typecheck`.
+typescript_bin.tsc_test(
+    name = "typecheck",
+    args = ["--project", "tsconfig.json"],
+    chdir = package_name(),
+    data = [
+        ":node_modules",
+        ":srcs",
+        ":tests",
+    ],
+)
+
+# `npm test`: the cases that need no servers.
+vitest_bin.vitest_test(
+    name = "test",
+    args = ["run"],
+    chdir = package_name(),
+    data = [
+        ":node_modules",
+        ":srcs",
+        ":tests",
+    ],
+)
+
+# `npm run test:servers`: with throwaway Postgres and Redis containers.
+sh_test(
+    name = "servers_test",
+    size = "large",
+    srcs = ["//durable-workflow-ts:scripts/with-servers.sh"],
+    args = ["$(rootpath :test)"],
+    data = [":test"],
+    tags = DOCKER_TEST_TAGS,
+)

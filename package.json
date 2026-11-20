@@ -1,0 +1,9 @@
+{
+  "name": "durable-workflow-monorepo",
+  "private": true,
+  "description": "pnpm workspace of the TypeScript SDK and its example; Bazel reads pnpm-lock.yaml (docs/bazel.md).",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.18"
+  }
+}

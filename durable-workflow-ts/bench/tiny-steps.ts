@@ -2,7 +2,7 @@
 // in calls between the engine (tokio threads) and JavaScript (the main
 // thread). Build the release addon first:
 //
-//   npm run build:native:release && npm run bench
+//   pnpm run build:native:release && pnpm run bench
 //
 // The memory backend is the default, so the numbers are the engine plus the
 // FFI. Set BENCH_DATABASE_URL (and BENCH_REDIS_URL) to run on Postgres.

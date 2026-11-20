@@ -94,3 +94,30 @@ crate.annotation(
     gen_build_script = "on",
     patches = ["//bazel/patches:libsqlite3-sys-manifest-dir.patch"],
 )
+
+# The TypeScript SDK and its example (docs/bazel.md). pnpm-lock.yaml, from the pnpm
+# workspace at the root, is the source of truth for npm packages, as Cargo.lock is for
+# crates.
+bazel_dep(name = "aspect_rules_js", version = "3.6.1")
+bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
+bazel_dep(name = "rules_nodejs", version = "6.7.7")
+bazel_dep(name = "bazel_lib", version = "3.8.0")
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(node_version = "22.23.4")  # engines: node >= 22.18 (type stripping)
+
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+npm.npm_translate_lock(
+    name = "npm",
+    pnpm_lock = "//:pnpm-lock.yaml",
+    verify_node_modules_ignored = "//:.bazelignore",
+)
+use_repo(npm, "npm")
+
+pnpm = use_extension("@aspect_rules_js//npm:extensions.bzl", "pnpm")
+pnpm.pnpm(
+    name = "pnpm",
+    pnpm_version_from = "//:package.json",
+)
+use_repo(pnpm, "pnpm")

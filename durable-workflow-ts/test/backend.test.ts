@@ -3,7 +3,7 @@
 // e.g. the ones `docker compose up -d` starts:
 //
 //   DURABLE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/durable \
-//   DURABLE_TEST_REDIS_URL=redis://localhost:6379 npm test
+//   DURABLE_TEST_REDIS_URL=redis://localhost:6379 pnpm test
 
 import { afterEach, describe, expect, test } from "vitest";
 import { z } from "zod";

@@ -163,6 +163,10 @@ def durable_rust_crate(
             crate_root = root,
             srcs = srcs,
             aliases = crate_aliases,
+            # The hermetic C++ runtime goes into the library instead of next to it
+            # (an `$ORIGIN`-relative libc++.so), so the file still loads once it is
+            # copied elsewhere, such as `durable.<platform>.node` in an npm package.
+            cc_runtime_linkage = "static",
             deps = normal_deps + build_script,
             visibility = visibility,
             **common

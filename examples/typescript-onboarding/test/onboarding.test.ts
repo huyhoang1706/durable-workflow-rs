@@ -1,6 +1,6 @@
 // The onboarding example, end to end: the HTTP API, the workflow and its
 // replay. The Postgres and Redis cases run when DURABLE_TEST_DATABASE_URL (and
-// DURABLE_TEST_REDIS_URL) are set; `npm run test:servers` starts both.
+// DURABLE_TEST_REDIS_URL) are set; `pnpm run test:servers` starts both.
 
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";

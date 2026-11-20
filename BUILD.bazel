@@ -1,5 +1,13 @@
-# Read by `crate.from_cargo` in MODULE.bazel.
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# Read by `crate.from_cargo` and `npm_translate_lock` in MODULE.bazel.
 exports_files([
     "Cargo.lock",
     "Cargo.toml",
+    "package.json",
+    "pnpm-lock.yaml",
 ])
+
+# node_modules/ for the root package (it has no dependencies); the SDK and the example
+# link their own in their BUILD files.
+npm_link_all_packages(name = "node_modules")

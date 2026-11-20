@@ -30,7 +30,8 @@ EOF
 done
 [[ $missing -eq 0 ]]
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+# libtest decides colours on its own; pass CARGO_TERM_COLOR on (CI sets `always`).
+cargo test --workspace --all-features -- --color "${CARGO_TERM_COLOR:-auto}"
 
 # The default (`standalone`) build must stay free of OpenTelemetry: it is the
 # opt-in `otel` feature that pulls it in.
@@ -48,12 +49,14 @@ fi
 
 # The TypeScript SDK: the native addon, type checks, the corpus checks
 # through the FFI and the end-to-end tests (Vitest), and the tsdown bundle.
-# Needs Node >= 22.18. `test:servers` runs the Postgres/Redis cases too, on
-# containers it starts (or on DURABLE_TEST_DATABASE_URL / _REDIS_URL if set).
-if command -v node >/dev/null; then
-    (cd durable-workflow-ts && npm ci && npm run build:native && npm run typecheck && npm run test:servers && npm run build)
+# Needs Node >= 22.18 and pnpm (the root is a pnpm workspace of both packages).
+# `test:servers` runs the Postgres/Redis cases too, on containers it starts (or
+# on DURABLE_TEST_DATABASE_URL / _REDIS_URL if set).
+if command -v node >/dev/null && command -v pnpm >/dev/null; then
+    pnpm install --frozen-lockfile
+    (cd durable-workflow-ts && pnpm run build:native && pnpm run typecheck && pnpm run test:servers && pnpm run build)
     # The example imports the built SDK (`dist/`, `durable.<platform>.node`) from above.
-    (cd examples/typescript-onboarding && npm ci && npm run typecheck && npm run test:servers)
+    (cd examples/typescript-onboarding && pnpm run typecheck && pnpm run test:servers)
 else
-    echo "warning: node not found; skipping the TypeScript SDK" >&2
+    echo "warning: node or pnpm not found; skipping the TypeScript SDK" >&2
 fi

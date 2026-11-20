@@ -2,7 +2,7 @@
 // processes (`test/chaos/worker.ts`) that the test kills.
 //
 // Runs only when DURABLE_TEST_DATABASE_URL and DURABLE_TEST_REDIS_URL are set
-// (`npm run test:servers` starts both). Redis is required: the processes share
+// (`pnpm run test:servers` starts both). Redis is required: the processes share
 // work through its queue.
 
 import { spawn, type ChildProcess } from "node:child_process";

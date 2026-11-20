@@ -1,4 +1,4 @@
-# Cargo's output and npm's dependency trees: not Bazel packages.
+# Cargo's output and the pnpm-installed dependency trees: not Bazel packages.
 target
 node_modules
 durable-workflow-ts/node_modules

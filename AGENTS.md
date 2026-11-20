@@ -12,17 +12,19 @@ DURABLE_UPDATE_CORPUS=1 cargo test -p durable-runtime --test replay_corpus   # r
 docker compose up -d                      # postgres:17 + redis:7 for the examples
 bazel test //... --test_tag_filters=-docker   # optional: the Rust workspace through Bazel (docs/bazel.md); drop the filter with Docker running
 bazel test //crates/durable-runtime:engine_async_test   # one test file under Bazel (`tests/<name>.rs` -> `:<name>_test`)
+bazel test //durable-workflow-ts/... //examples/typescript-onboarding/...   # the TypeScript SDK and example under Bazel: addon from the Rust crates, tsc, Vitest, tsdown
 bazel build --config=clippy //...         # clippy -D warnings under Bazel; add --config=buildbuddy-readonly for the shared cache (key in user.bazelrc, docs/bazel.md)
-cd durable-workflow-ts && npm ci && npm run build:native && npm run typecheck && npm test && npm run build   # TypeScript SDK (Node >= 22.18): TS 7, Vitest, tsdown
-cd durable-workflow-ts && npm run build:native:release && npm run bench   # tiny-step throughput; Rust baseline: cargo run --release -p durable-workflow --example tiny_steps
-cd durable-workflow-ts && npm run test:servers   # also the SDK's Postgres/Redis cases, on throwaway containers (npm test skips them)
-DURABLE_TEST_DATABASE_URL=postgres://... DURABLE_TEST_REDIS_URL=redis://... npm test   # the same cases on your own servers
-cd examples/typescript-onboarding && npm ci && npm run typecheck && npm run test:servers   # the TypeScript example; build the SDK (incl. npm run build) first
+pnpm install                              # the pnpm workspace at the root: durable-workflow-ts + examples/typescript-onboarding, one pnpm-lock.yaml
+cd durable-workflow-ts && pnpm run build:native && pnpm run typecheck && pnpm test && pnpm run build   # TypeScript SDK (Node >= 22.18): TS 7, Vitest, tsdown
+cd durable-workflow-ts && pnpm run build:native:release && pnpm run bench   # tiny-step throughput; Rust baseline: cargo run --release -p durable-workflow --example tiny_steps
+cd durable-workflow-ts && pnpm run test:servers   # also the SDK's Postgres/Redis cases, on throwaway containers (pnpm test skips them)
+DURABLE_TEST_DATABASE_URL=postgres://... DURABLE_TEST_REDIS_URL=redis://... pnpm test   # the same cases on your own servers
+cd examples/typescript-onboarding && pnpm run typecheck && pnpm run test:servers   # the TypeScript example; build the SDK (incl. pnpm run build) first
 ```
 
-`examples/typescript-onboarding` is an npm project, not a crate: it is excluded from the Cargo workspace.
+`examples/typescript-onboarding` is an npm package in the pnpm workspace, not a crate: it is excluded from the Cargo workspace. Use pnpm, not npm: there is no `package-lock.json`.
 
-The Rust crates build with Cargo or Bazel. Cargo is the source of truth; Bazel reads `Cargo.toml` / `Cargo.lock` through `rules_rs`, so dependency and feature changes need no Bazel edits. A new crate needs a `BUILD.bazel` (`./ci.sh` prints it), a container test needs `DOCKER_TEST_TAGS`; see `docs/bazel.md`. Do not hand-write dependency lists in BUILD files.
+Everything builds with Cargo/pnpm or Bazel. Cargo and pnpm are the source of truth; Bazel reads `Cargo.toml` / `Cargo.lock` through `rules_rs` and `pnpm-lock.yaml` through `rules_js`, so dependency and feature changes need no Bazel edits. A new crate needs a `BUILD.bazel` (`./ci.sh` prints it), a container test needs `DOCKER_TEST_TAGS`; see `docs/bazel.md`. Do not hand-write dependency lists in BUILD files.
 
 Docker must be running for the full suite: the Postgres/Redis plugin tests, the CLI smoke test and the chaos suite start their own containers (testcontainers). Without Docker, run per-crate tests for `durable-sm`, `durable-spi`, `durable-runtime`, `durable-testkit`, `durable-memory` and `durable-macros`.
 
