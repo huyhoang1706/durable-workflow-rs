@@ -1,0 +1,5 @@
+# ShellCheck configuration, read by shellcheck and by the Bazel shellcheck aspect
+# (tools/lint/linters.bzl).
+# Follow `source` statements, relative to the script's directory.
+external-sources=true
+source-path=SCRIPTDIR

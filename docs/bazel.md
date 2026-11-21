@@ -25,7 +25,10 @@ bazel test //plugins/durable-redis/...              # one crate
 bazel test //durable-workflow-ts/... //examples/typescript-onboarding/...   # the TypeScript SDK and example
 bazel test //crates/durable-runtime:engine_async_test   # one test file (tests/engine_async.rs)
 bazel test //crates/durable-runtime:engine_async_test --test_arg=<name filter>   # like `cargo test <name>`
-bazel build --config=clippy //...                   # clippy, warnings are errors
+bazel build --config=lint //...                     # clippy, shellcheck, buildifier: any finding fails
+bazel run //:format                                 # rustfmt, shfmt, buildifier on the working tree
+bazel run //:format.check                           # the same, reporting only (CI)
+bazel run //tools:bazel_env                         # editor/shell tools on PATH (see "Developer tools")
 ```
 
 | Cargo | Bazel |
@@ -35,14 +38,14 @@ bazel build --config=clippy //...                   # clippy, warnings are error
 | `cargo test -p durable-runtime --test engine_async` | `bazel test //crates/durable-runtime:engine_async_test` |
 | `cargo test -p durable-runtime --lib` | `bazel test //crates/durable-runtime:unit_test` |
 | `cargo test -p durable-runtime --doc` | `bazel test //crates/durable-runtime:doc_test` |
-| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `bazel build --config=clippy //...` |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `bazel build --config=lint //...` |
 | `cargo run -p durable-cli -- <args>` | `bazel run //crates/durable-cli:durable -- <args>` |
 | `pnpm run typecheck` (in `durable-workflow-ts`) | `bazel test //durable-workflow-ts:typecheck` |
 | `pnpm test` | `bazel test //durable-workflow-ts:test` |
 | `pnpm run test:servers` | `bazel test //durable-workflow-ts:servers_test` (Docker) |
 | `pnpm run build` | `bazel build //durable-workflow-ts:dist` |
 | the example's `pnpm run typecheck` / `pnpm test` / `pnpm run test:servers` | `//examples/typescript-onboarding:typecheck` / `:test` / `:servers_test` |
-| `cargo fmt --all` | stays Cargo |
+| `cargo fmt --all` / `cargo fmt --all --check` | `bazel run //:format` / `bazel run //:format.check` (also shell and Starlark files) |
 | `cargo test -p durable-workflow --test compile_fail` (trybuild) | stays Cargo: trybuild runs `cargo` |
 | `DURABLE_UPDATE_CORPUS=1 cargo test ... replay_corpus` | stays Cargo: it writes into the source tree |
 | `pnpm run bench`, `pnpm run test:watch` | stay pnpm: developer loops |
@@ -108,7 +111,7 @@ Two things to keep in mind:
 ## How it fits together
 
 ```
-.bazelversion, .bazelrc, .bazelignore
+.bazelversion, .bazelrc, REPO.bazel
 MODULE.bazel, MODULE.bazel.lock   rules_rs reads Cargo.toml/Cargo.lock into the @crates repository,
                                   rules_js reads pnpm-lock.yaml into @npm; Node is pinned there
 rust-toolchain.toml               the Rust version for rustup; MODULE.bazel pins the same one
@@ -116,6 +119,14 @@ package.json, pnpm-workspace.yaml the pnpm workspace: durable-workflow-ts and ex
 bazel/rust.bzl                    durable_rust_crate: Cargo's layout as Bazel targets
 bazel/typescript.bzl              the addon's platform names (durable.<platform>.node)
 bazel/checks/                     dependency-hygiene tests
+tools/lint/linters.bzl            the rules_lint linter aspects (--config=lint)
+tools/format/BUILD.bazel          the rules_lint formatters (bazel run //:format)
+tools/tools.lock.json             prebuilt tools fetched by rules_multitool (buildifier, starpls)
+tools/BUILD.bazel                 bazel_env (developer tools on PATH) and the bazelrc preset
+tools/preset.bazelrc              generated Bazel flag defaults, imported first by .bazelrc
+.envrc                            direnv: bazel-out/bazel_env-opt/bin/tools/bazel_env/bin on PATH
+clippy.toml, rustfmt.toml,        linter and formatter settings, shared with cargo and editors
+.shellcheckrc, .editorconfig
 <crate>/BUILD.bazel               one durable_rust_crate call per crate
 durable-workflow-ts/BUILD.bazel   the crate, plus the TypeScript targets (below)
 ```
@@ -182,6 +193,85 @@ What is worth knowing:
 - **Compilation mode.** The addon is built in the invocation's mode (`fastbuild` by default): right for tests. The
   tiny-step benchmark wants `pnpm run build:native:release`.
 
+## Lint and format
+
+[rules_lint](https://github.com/aspect-build/rules_lint) runs the linters and formatters under Bazel.
+
+**Linters** are aspects declared in `tools/lint/linters.bzl`: they attach to the targets that already exist, so
+no BUILD file mentions them, and each target's result is cached like a compile. `bazel build --config=lint //...`
+runs them all and fails on any finding, printing it (`--keep_going` shows every one):
+
+| Linter | Visits | Configuration |
+|---|---|---|
+| clippy ([`aspect_rules_lint_rust`](https://registry.bazel.build/modules/aspect_rules_lint_rust), the rules_rs flavour) | every Rust target | `clippy.toml`, `[lints]` in `Cargo.toml` |
+| shellcheck | `sh_binary` / `sh_library` / `sh_test` sources | `.shellcheckrc` |
+| buildifier (lint warnings) | filegroups tagged `starlark`: `//:starlark_files`, `//bazel:starlark_files`, ... | `--warnings=all` |
+
+A target opts out with `tags = ["no-lint"]` (clippy also honours `noclippy`). Add `--config=lint-fix` to also
+write the fixes the linters suggest as patches (`bazel-bin/**/*.patch`, apply with `patch -p1 < <file>`). Clippy
+under Bazel gives the same findings as `cargo clippy`: same toolchain version, same configuration.
+
+**Formatters** are one `format_multirun` target, `//tools/format` (aliased as `//:format`). It runs on the files in
+the working tree, not on Bazel targets, so scripts no target lists (`ci.sh`) are formatted too:
+
+| Files | Formatter | Configuration |
+|---|---|---|
+| `*.rs` | rustfmt from the Bazel Rust toolchain | `rustfmt.toml` (the edition: rustfmt runs on files, not through Cargo) |
+| `*.sh`, shebang scripts | shfmt | `.editorconfig` |
+| `BUILD.bazel`, `*.bzl`, `MODULE.bazel` | buildifier | none |
+
+`bazel run //:format -- <files>` formats only those files. A file is skipped when `.gitattributes` gives it
+`rules-lint-ignored=true`: that is how the trybuild fixtures in `durable-workflow-rs/tests/ui/` keep their
+layout, since their compiler output, line numbers included, is pinned in the `.stderr` files.
+
+TypeScript has no linter or formatter yet: the SDK uses neither ESLint nor Prettier. rules_lint supports both
+(an `eslint` aspect over the `js_library` targets, `javascript = prettier` in `format_multirun`) once they are
+added to the pnpm workspace.
+
+The tool versions: rules_lint pins shellcheck and shfmt; buildifier is pinned in `tools/tools.lock.json` (a
+plain binary, which also runs inside lint actions, unlike `buildifier_prebuilt`'s runfiles wrapper); clippy and
+rustfmt come with the Rust toolchain in `MODULE.bazel`.
+
+## Developer tools: bazel_env
+
+[bazel_env](https://github.com/buildbuddy-io/bazel_env.bzl) puts the tools the build pins at a stable path,
+`bazel-out/bazel_env-opt/bin/tools/bazel_env/bin`, for editors and the shell: `buildifier`, `starpls` (the Starlark language
+server), `shellcheck` and `shfmt`. They run directly, not through `bazel run`, so they start instantly, do not
+wait for a running build, and run in your working directory.
+
+Once per clone:
+
+```bash
+bazel run //tools:bazel_env   # stages the tools, checks direnv
+direnv allow                  # with direnv's shell hook installed: .envrc puts the tools on PATH
+```
+
+`.vscode/settings.json` points the Bazel extension's buildifier and language server at the same directory. bazel_env
+also keeps a git-ignored symlink to it, `tools/.bazel_env`, which works with any `--symlink_prefix`. Starting
+a tool after `MODULE.bazel`, `tools/tools.lock.json` or `tools/BUILD.bazel` changed rebuilds the
+environment first, so a version bump needs no manual rerun.
+
+Only tools nothing else installs go on PATH: `cargo`, `rustc`, `node` and `pnpm` keep coming from rustup and
+your Node install. The Bazel-pinned Node is at `bazel-out/bazel_env-opt/bin/tools/bazel_env/toolchains/nodejs`. The Rust
+toolchain is not staged: rules_rs splits it over several repositories, and bazel_env links one per toolchain
+(`rust-toolchain.toml` pins the same version for rustup). To add a tool, add it to `tools/tools.lock.json`
+(URL and sha256 per platform) and to `tools` of `bazel_env` in `tools/BUILD.bazel`.
+
+## Flag preset
+
+`tools/preset.bazelrc` holds Bazel flags with better defaults than Bazel's own, generated by
+[bazelrc-preset.bzl](https://github.com/bazel-contrib/bazelrc-preset.bzl) for the Bazel version in
+`.bazelversion` and checked in, so a change to it is a reviewed diff. `.bazelrc` imports it first and overrides
+what does not fit this repository: `--lockfile_mode` stays `update` on CI, CI logs keep `--curses=no`, and
+`:buildbuddy` uploads to the cache (the preset uploads only under `--config=ci`; `:buildbuddy-readonly` still
+does not).
+
+Its `:ci` flags only work when `--config=ci` comes before any other config, so CI writes it as the first line of
+`user.bazelrc` instead of passing it on the command line. To try CI's flags locally, do the same.
+
+After a Bazel or bazelrc-preset.bzl upgrade, `//tools:preset.update_test` (part of `bazel test //...`) fails until
+`bazel run //tools:preset.update` regenerates the file; review the diff like code.
+
 ## When you need to touch Bazel files
 
 Most changes need none: dependencies, features and versions come from `Cargo.toml` and `pnpm-lock.yaml`, and new
@@ -195,6 +285,8 @@ source or test files are picked up by globs.
 - **A test with `required-features` that Cargo's workspace feature unification does not turn on.** Add the
   feature and the dependency it enables: `crate_features = ["reqwest"]`, `deps = ["@crates//reqwest"]` (see
   `crates/durable-runtime/BUILD.bazel`).
+- **A new shell script in an `sh_*` target** is linted by shellcheck. A new package with `.bzl` files gets
+  buildifier lint by adding a `starlark_files` filegroup tagged `starlark`, like `bazel/BUILD.bazel`.
 - **`MODULE.bazel.lock`.** Bazel updates it after `Cargo.lock` changes; commit the update if you ran Bazel. If
   you only use Cargo, leave it: CI does not require it to be current.
 

@@ -1,0 +1,3 @@
+# Read by `cargo fmt` and by `bazel run //:format`, which runs rustfmt on files
+# directly and so does not get the edition from Cargo.toml.
+edition = "2024"

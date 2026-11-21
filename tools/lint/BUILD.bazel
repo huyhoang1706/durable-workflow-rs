@@ -1,0 +1,1 @@
+# Linter aspects live in linters.bzl; `bazel build --config=lint //...` runs them.

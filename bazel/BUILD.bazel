@@ -8,3 +8,10 @@ load(":typescript.bzl", "NAPI_TRIPLES")
     )
     for triple, constraints in NAPI_TRIPLES.items()
 ]
+
+# Starlark files for the buildifier lint aspect (tools/lint/linters.bzl).
+filegroup(
+    name = "starlark_files",
+    srcs = ["BUILD.bazel"] + glob(["*.bzl"]),
+    tags = ["starlark"],
+)

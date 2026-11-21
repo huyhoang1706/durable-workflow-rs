@@ -1,6 +1,16 @@
 # Dependency hygiene, checked on the Bazel graph instead of `cargo tree | grep`.
 load(":forbidden_crates.bzl", "forbidden_crates_test")
 
+# Starlark files for the buildifier lint aspect (tools/lint/linters.bzl).
+filegroup(
+    name = "starlark_files",
+    srcs = [
+        "BUILD.bazel",
+        "forbidden_crates.bzl",
+    ],
+    tags = ["starlark"],
+)
+
 # Every SDK embeds durable-sm: it must stay free of async runtimes and IO.
 forbidden_crates_test(
     name = "durable_sm_is_sans_io",

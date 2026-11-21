@@ -6,6 +6,16 @@ module(name = "durable_workflow")
 bazel_dep(name = "rules_rs", version = "0.2.4")
 bazel_dep(name = "llvm", version = "0.8.26")
 bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "aspect_rules_lint", version = "2.9.1")
+bazel_dep(name = "aspect_rules_lint_rust", version = "0.0.3")
+bazel_dep(name = "rules_multitool", version = "1.11.1")
+
+bazel_dep(name = "bazel_env.bzl", version = "0.10.0", dev_dependency = True)
+bazel_dep(name = "bazelrc-preset.bzl", version = "1.10.0", dev_dependency = True)
+
+multitool = use_extension("@rules_multitool//multitool:extension.bzl", "multitool")
+multitool.hub(lockfile = "//tools:tools.lock.json")
+use_repo(multitool, "multitool")
 
 toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 toolchains.toolchain(
@@ -64,6 +74,7 @@ crate.annotation(
     rustc_flags = ["--cfg=use_bindgen_pregenerated"],
     deps = ["@crates//aws_lc_sys_build_info"],
 )
+
 inject_repo(crate, "aws-lc")
 
 # rules_rs 0.2.4 unions sqlx-core features requested by sqlx-macros-core, which is in
@@ -76,7 +87,6 @@ crate.annotation(
         "offline",
     ],
 )
-
 crate.annotation(
     crate = "sqlx-sqlite",
     crate_features = [
@@ -106,12 +116,12 @@ bazel_dep(name = "rules_shell", version = "0.8.0")
 
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
 node.toolchain(node_version = "22.23.4")  # engines: node >= 22.18 (type stripping)
+use_repo(node, "nodejs_toolchains")  # for bazel_env in tools/BUILD.bazel
 
 npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
 npm.npm_translate_lock(
     name = "npm",
     pnpm_lock = "//:pnpm-lock.yaml",
-    verify_node_modules_ignored = "//:.bazelignore",
 )
 use_repo(npm, "npm")
 

@@ -3,3 +3,6 @@
 /bazel-*
 /user.bazelrc
 /node_modules
+# bazel_env (//tools:bazel_env): the symlink into bazel-out and the watched-file hashes.
+/tools/.bazel_env
+/bazel_env.lock

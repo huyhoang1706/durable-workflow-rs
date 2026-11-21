@@ -1,0 +1,53 @@
+load("@bazel_env.bzl", "bazel_env")
+load("@bazelrc-preset.bzl", "bazelrc_preset")
+load("@multitool//:tools.bzl", MULTITOOL = "TOOLS")
+
+# Prebuilt tools fetched by rules_multitool from tools.lock.json, as
+# `@multitool//tools/<name>` (MODULE.bazel). Add one with its release URL and sha256
+# for each platform in `crate.from_cargo(platform_triples)`.
+exports_files(["tools.lock.json"])
+
+# tools/preset.bazelrc, imported first by .bazelrc: Bazel flags with better defaults for
+# the Bazel version in .bazelversion, from bazelrc-preset.bzl. Generated and checked in,
+# so a preset change arrives as a reviewable diff. `bazel run //tools:preset.update`
+# regenerates it; `:preset.update_test` (part of `bazel test //...`) fails when it is stale.
+bazelrc_preset(
+    name = "preset",
+    doc_link_template = "https://registry.build/flag/bazel?filter={flag}",
+)
+
+# `bazel run //tools:bazel_env` stages the tools below, at the versions the build uses,
+# in bazel-out/bazel_env-opt/bin/tools/bazel_env/bin, the path .vscode/settings.json and
+# .envrc name (tools/.bazel_env is a git-ignored symlink to the same place), and prints
+# how to put it on PATH with direnv. The tools run directly, without `bazel run`, in
+# the caller's working directory.
+#
+# On PATH: only tools nothing else on a developer's machine provides, so cargo, rustc,
+# node and pnpm keep coming from rustup (rust-toolchain.toml pins the same Rust) and the
+# Node install. The Bazel-pinned Node is at
+# bazel-out/bazel_env-opt/bin/tools/bazel_env/toolchains/nodejs, for an editor that wants it. The Rust toolchain cannot be staged the same way: rules_rs
+# splits it over several repositories (rustc, clippy, stdlib), and bazel_env links one.
+bazel_env(
+    name = "bazel_env",
+    # Not part of `bazel build //...` / `bazel test //...`: CI needs none of this.
+    tags = ["manual"],
+    toolchains = {
+        "nodejs": "@nodejs_toolchains//:resolved_toolchain",
+    },
+    tools = {
+        "buildifier": MULTITOOL["buildifier"],
+        "shellcheck": MULTITOOL["shellcheck"],
+        "shfmt": MULTITOOL["shfmt"],
+        "starpls": MULTITOOL["starpls"],
+    },
+    # A tool started after one of these changed rebuilds the environment first, so a
+    # version bump in tools.lock.json reaches the editor without a manual rerun. The
+    # hashes are kept in bazel_env.lock at the root (git-ignored).
+    watch_files = {
+        "_common": [
+            "MODULE.bazel",
+            "tools/BUILD.bazel",
+            "tools/tools.lock.json",
+        ],
+    },
+)

@@ -175,7 +175,7 @@ Recommendations first; the open ones are listed again at the end.
 ```
 .bazelversion                 9.3.2
 .bazelrc                      shared flags, :ci and :clippy configs
-.bazelignore                  target, node_modules, durable-workflow-ts/node_modules, ...
+REPO.bazel                    ignore_directories: target, node_modules, durable-workflow-ts/node_modules, ...
 MODULE.bazel, MODULE.bazel.lock
 BUILD.bazel                   npm_link_all_packages, exports Cargo.toml / Cargo.lock
 pnpm-workspace.yaml, pnpm-lock.yaml, package.json (root, private)
@@ -376,7 +376,7 @@ slower than today).
 
 ### Phase 1: Rust builds (1 to 2 days)
 
-- `.bazelversion`, `.bazelrc`, `.bazelignore`, `MODULE.bazel`, `rust-toolchain.toml`.
+- `.bazelversion`, `.bazelrc`, `REPO.bazel`, `MODULE.bazel`, `rust-toolchain.toml`.
 - `bazel/rust.bzl` with the library, proc-macro and binary parts of the macro.
 - `BUILD.bazel` for every crate, in dependency order: `durable-sm`, `durable-spi`, `durable-macros`,
   `durable-testkit`, `durable-memory`, `durable-runtime`, `durable-postgres`, `durable-redis`, `durable-otel`,

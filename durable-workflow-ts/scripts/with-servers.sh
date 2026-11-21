@@ -70,8 +70,11 @@ containers+=("$redis")
 wait_until "Postgres" docker exec "$pg" pg_isready -U postgres -h 127.0.0.1 -q
 wait_until "Redis" docker exec "$redis" redis-cli ping
 
-export DURABLE_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$(host_port "$pg" 5432/tcp)/durable"
-export DURABLE_TEST_REDIS_URL="redis://127.0.0.1:$(host_port "$redis" 6379/tcp)"
+# Assigned before `export`, so a failing host_port stops the script (set -e).
+pg_port=$(host_port "$pg" 5432/tcp)
+redis_port=$(host_port "$redis" 6379/tcp)
+export DURABLE_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$pg_port/durable"
+export DURABLE_TEST_REDIS_URL="redis://127.0.0.1:$redis_port"
 
 # Not `exec`: the trap removes the containers when the command is done.
 "$@"
