@@ -32,6 +32,23 @@ These come from iter1.
 - Versioning / patching APIs for changing in-flight workflow code.
 - First-party integration clients (email, Slack, Teams) under `plugins/`.
 
+## Engine
+
+- **The reconciler re-enqueues runs that are already executing**, seen while fixing flaky tests on
+  `feat/bazel-lint-format`. A new run is stored as `pending` with `wake_at = created_at`, and a resumed run keeps
+  its past `wake_at`, until the execution's first commit. A reconciler tick in that window finds the run due
+  (`due_runs`) and enqueues it; the queue sees the lease and records a rerun, which `ack` makes due at once. The
+  run is replayed one extra time before its timer fires. Harmless, since replay is deterministic, but wasted work
+  for any execution that is still running at a tick (every 5 s by default) without having committed.
+  - Fix options: `due_runs` / the reconciler skip runs the queue holds a live lease for, or the queue drops an
+    enqueue that brings nothing new for a leased run. The second must not drop a signal delivered mid-execution,
+    whose item can carry the same due time (`ManualClock` tests), so it needs more than a `due_at` comparison.
+  - Touches every queue backend (memory, Redis, Postgres); `durable-testkit`'s queue conformance should pin the
+    new behaviour.
+  - Tests that count executions or store loads exactly have to work around it today:
+    `history_cache.rs` turns the reconciler off, `engine_async.rs`'s
+    `deterministic_helpers_are_stable_across_replays` asserts at least two executions.
+
 ## Storage and operations
 
 These come from iter1.
@@ -74,6 +91,13 @@ These come from [iter3](plans/iter3-sansio-core.md), seen while running `ci.sh` 
   when rerun alone or with the rest of the chaos file. Likely a race between a killed worker's attempt and the
   `Closed` marker when the machine is busy; find out whether the stream can stay open for good, or whether the test
   checks too early.
+- **Two load-sensitive tests in `engine_async`**, seen while fixing flaky tests on `feat/bazel-lint-format`.
+  `parallel_steps_run_concurrently` ("steps ran serially") and `failing_step_is_retried_and_attempt_is_visible`
+  (the 10 s `Harness::until` timeout) each failed 2 times in 100 with 100 copies of the test file running at once
+  (`bazel test //crates/durable-runtime:engine_async_test --runs_per_test=100`). They passed 60 out of 60 with
+  `--local_test_jobs=4`, and never failed in a normal run. Both rely on real time (a concurrency window, a
+  wall-clock timeout); find out whether they can wait on events instead, now that CI no longer retries failing
+  tests.
 - **Testcontainers left running.** After a full `./ci.sh`, about 28 `postgres:17` / `redis:7` containers labelled
   `org.testcontainers.managed-by=testcontainers` keep running. The shared containers held in statics are probably
   never dropped. Stop them when the test binary exits (or enable Ryuk), so repeated local runs do not pile them up.
