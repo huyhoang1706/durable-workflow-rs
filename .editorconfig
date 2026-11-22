@@ -1,0 +1,14 @@
+# Read by editors and by shfmt (`bazel run //:format`, tools/format).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+[*.sh]
+indent_style = space
+indent_size = 4
+
+[.claude/**.sh]
+indent_size = 2

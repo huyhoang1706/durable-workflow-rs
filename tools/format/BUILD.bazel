@@ -1,0 +1,20 @@
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+
+# `bazel run //:format` formats the files in the working tree in place (all of them, or
+# the ones given as arguments); `bazel run //:format.check` only reports, and exits
+# non-zero when a file needs formatting (CI). Files Bazel does not know about are
+# formatted too. Each tool reads its usual configuration: rustfmt.toml, .editorconfig.
+format_multirun(
+    name = "format",
+    rust = "@rules_rust//tools/upstream_wrapper:rustfmt",
+    shell = "@aspect_rules_lint//format:shfmt",
+    starlark = "@multitool//tools/buildifier",
+    visibility = ["//:__pkg__"],
+)
+
+# Starlark files for the buildifier lint aspect (tools/lint/linters.bzl).
+filegroup(
+    name = "starlark_files",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

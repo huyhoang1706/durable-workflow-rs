@@ -57,14 +57,20 @@ js_library(
 
 js_library(
     name = "tests",
-    srcs = glob(["test/**/*.ts", "bench/**/*.ts"]),
+    srcs = glob([
+        "test/**/*.ts",
+        "bench/**/*.ts",
+    ]),
 )
 
 # `npm run typecheck`. TypeScript 7 is a native binary: `tsc` from the npm package, not
 # ts_project, so the existing tsconfig.json (noEmit, .ts imports) is used as it is.
 typescript_bin.tsc_test(
     name = "typecheck",
-    args = ["--project", "tsconfig.json"],
+    args = [
+        "--project",
+        "tsconfig.json",
+    ],
     chdir = package_name(),
     data = [
         ":node_modules",
@@ -108,7 +114,10 @@ tsdown_bin.tsdown(
         ":node_modules",
         ":srcs",
     ],
-    args = ["--logLevel", "warn"],
+    args = [
+        "--logLevel",
+        "warn",
+    ],
     chdir = package_name(),
     out_dirs = ["dist"],
     # The .d.mts comes from tsgo, a native binary that resolves the sandbox's symlinks

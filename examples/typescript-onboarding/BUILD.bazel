@@ -27,7 +27,10 @@ js_library(
 # `npm run typecheck`.
 typescript_bin.tsc_test(
     name = "typecheck",
-    args = ["--project", "tsconfig.json"],
+    args = [
+        "--project",
+        "tsconfig.json",
+    ],
     chdir = package_name(),
     data = [
         ":node_modules",
@@ -56,4 +59,11 @@ sh_test(
     args = ["$(rootpath :test)"],
     data = [":test"],
     tags = DOCKER_TEST_TAGS,
+)
+
+# Starlark files for the buildifier lint aspect (tools/lint/linters.bzl).
+filegroup(
+    name = "starlark_files",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
 )

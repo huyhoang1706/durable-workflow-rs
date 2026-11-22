@@ -1,0 +1,15 @@
+"""Global repository settings"""
+
+ignore_directories([
+    ".agents",
+    ".claude",
+    ".vscode",
+    "target",
+    "**/node_modules",
+    # Bazel's convenience symlinks and the bazel_env symlink point into an output base,
+    # full of external repositories' BUILD files. A Bazel server skips the convenience
+    # symlinks of its own output base only, so a second server (the VS Code extension's
+    # queries, with bazel.commandLine.queriesShareServer: false) would walk into them.
+    "bazel-*",
+    "tools/.bazel_env",
+])

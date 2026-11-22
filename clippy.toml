@@ -1,0 +1,3 @@
+# Clippy configuration, read by `cargo clippy` and by the Bazel clippy aspect
+# (tools/lint/linters.bzl). Lint levels belong in Cargo.toml `[lints]`; this file
+# holds clippy's own settings (https://doc.rust-lang.org/clippy/configuration.html).

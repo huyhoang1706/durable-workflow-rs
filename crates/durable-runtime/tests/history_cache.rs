@@ -160,13 +160,39 @@ async fn resuming_a_suspended_run_skips_the_store_load_when_the_cache_is_current
     );
 }
 
+/// Waits for the worker's own cache write. It writes the log to the cache after it
+/// commits the suspension, so an entry a test puts there as soon as it sees the
+/// commit can still be overwritten with a valid one.
+async fn cache_caught_up(h: &Harness, id: RunId) {
+    let cache = h.backend.cache.clone().unwrap();
+    let key = format!("dw:hist:{id}");
+    let last_seq = h.run(id).await.last_seq;
+    h.eventually("the worker's history cache write", || {
+        let (cache, key) = (cache.clone(), key.clone());
+        async move {
+            cache
+                .get(&key)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|entry| entry["last_seq"] == json!(last_seq))
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_stale_or_corrupt_cache_falls_back_to_the_store() {
     let mut h = Harness::new();
     let (loads, runs) = counting(&mut h, true);
-    h.spawn(sleeper(&h, runs.clone()));
+    // No reconciler: a tick during the first execution, while the run is still
+    // `pending` and due, queues an extra replay that would shift the load counts.
+    // The timers wake the run through the queue, without it.
+    h.spawn(sleeper(&h, runs.clone()).reconcile_interval(Duration::from_secs(3600)));
     let id = h.start("nap", json!(null)).await;
     h.suspended(id).await;
+    cache_caught_up(&h, id).await;
     let cache = h.backend.cache.clone().unwrap();
     let key = format!("dw:hist:{id}");
 
@@ -178,6 +204,7 @@ async fn a_stale_or_corrupt_cache_falls_back_to_the_store() {
         .unwrap();
     h.advance(3601);
     h.until(id, "second suspension", |r| r.last_seq >= 5).await;
+    cache_caught_up(&h, id).await;
     assert_eq!(loads.load(SeqCst), 2, "stale entry ignored");
 
     // Corrupt bytes are ignored too.

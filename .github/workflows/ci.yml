@@ -71,18 +71,24 @@ jobs:
           # Only without BuildBuddy: no point storing the same blobs twice.
           disk-cache: ${{ env.BUILDBUDDY_API_KEY == '' && format('{0}-{1}', github.workflow, github.job) || false }}
           repository-cache: true
-      - name: Configure BuildBuddy
-        if: env.BUILDBUDDY_API_KEY != ''
+      # user.bazelrc is git-ignored and imported last by .bazelrc. --config=ci goes in
+      # first, not on the command line: the preset's :ci flags (tools/preset.bazelrc) must
+      # come before the BuildBuddy config, which decides whether this run writes the cache.
+      - name: Configure Bazel
         run: |
-          config=buildbuddy-readonly
-          if [ "$GITHUB_EVENT_NAME" = push ]; then config=buildbuddy; fi
-          # user.bazelrc is git-ignored and imported by .bazelrc.
-          cat > user.bazelrc <<EOF
+          echo "common --config=ci" > user.bazelrc
+          if [ -n "$BUILDBUDDY_API_KEY" ]; then
+            config=buildbuddy-readonly
+            if [ "$GITHUB_EVENT_NAME" = push ]; then config=buildbuddy; fi
+            cat >> user.bazelrc <<EOF
           common --config=$config
           common --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY
           common --bes_header=x-buildbuddy-api-key=$BUILDBUDDY_API_KEY
           EOF
-      # Clippy (warnings are errors) on every crate, then every test, including the
-      # Postgres/Redis suites (Docker is available on the runner).
-      - run: bazel build --config=ci --config=clippy //...
-      - run: bazel test --config=ci ${{ github.event_name == 'schedule' && '--nocache_test_results' || '' }} //...
+          fi
+      # Formatting (rustfmt, shfmt, buildifier), then the rules_lint linters (clippy,
+      # shellcheck, buildifier; any finding fails) on every target, then every test,
+      # including the Postgres/Redis suites (Docker is available on the runner).
+      - run: bazel run //:format.check
+      - run: bazel build --config=lint //...
+      - run: bazel test ${{ github.event_name == 'schedule' && '--nocache_test_results' || '' }} //...

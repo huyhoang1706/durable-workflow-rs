@@ -1,7 +1,15 @@
 # Bazel builds the Rust workspace next to Cargo; Cargo.toml / Cargo.lock stay the
 # source of truth. See docs/bazel.md.
 
-common --enable_platform_specific_config
+########################
+# Preset: flags with better defaults for this Bazel version, from bazelrc-preset.bzl
+# (tools/BUILD.bazel; `bazel run //tools:preset.update` regenerates it). First, so the
+# project flags below override it. Its :ci flags assume `--config=ci` is in effect
+# before any other config, which is why CI puts it first in user.bazelrc.
+import %workspace%/tools/preset.bazelrc
+
+########################
+# Project flags
 
 # Only the hermetic @llvm C/C++ toolchain: never the machine's compiler, so cache
 # keys do not depend on what is installed on the host or CI runner.
@@ -12,7 +20,6 @@ common --incompatible_strict_action_env
 # rules_js / rules_ts report usage to Aspect from CI unless told not to.
 common --repo_env=ASPECT_TOOLS_TELEMETRY=off
 
-test --test_output=errors
 # The Docker-tagged tests: testcontainers finds the daemon through the first three
 # when set; the DURABLE_TEST_* URLs point the tests at running servers instead.
 test --test_env=DOCKER_HOST
@@ -22,20 +29,33 @@ test --test_env=DURABLE_TEST_POSTGRES_URL
 test --test_env=DURABLE_TEST_REDIS_URL
 test --test_env=DURABLE_TEST_REDIS_FLUSHABLE_URL
 
-# Clippy on every Rust target, cached per crate. Warnings are errors, as in ci.sh:
-#   bazel build --config=clippy //...
-build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
-build:clippy --output_groups=+clippy_checks
-build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+# rules_lint linters (tools/lint/linters.bzl), cached per target: clippy on every Rust
+# target, shellcheck on the sh_* targets, buildifier on the .bzl files. Any finding
+# fails the build and is printed, as warnings-are-errors clippy does in ci.sh:
+#   bazel build --config=lint //...
+build:lint --aspects=//tools/lint:linters.bzl%clippy
+build:lint --aspects=//tools/lint:linters.bzl%shellcheck
+build:lint --aspects=//tools/lint:linters.bzl%buildifier
+build:lint --output_groups=+rules_lint_human
+build:lint --@aspect_rules_lint//lint:fail_on_violation
+# `bazel build --config=lint --config=lint-fix //...` also writes a patch of the fixes
+# the linters suggest (bazel-bin/**/*.patch), for `patch -p1`.
+build:lint-fix --@aspect_rules_lint//lint:fix
+build:lint-fix --output_groups=+rules_lint_patch
 
-# No --lockfile_mode=error: a Cargo-only change to Cargo.lock must not need a Bazel
-# run to pass CI. MODULE.bazel.lock is refreshed by whoever next runs Bazel.
+# Not the preset's --lockfile_mode=error: a Cargo-only change to Cargo.lock must not
+# need a Bazel run to pass CI. MODULE.bazel.lock is refreshed by whoever next runs Bazel.
+common:ci --lockfile_mode=update
 common:ci --keep_going
 common:ci --verbose_failures
 common:ci --build_metadata=ROLE=CI
-# CI logs are not a terminal: keep the colours (errors, PASSED/FAILED), drop the
-# redrawn progress bar, and let the test runners colour their output too.
-common:ci --color=yes
+# Not the preset's --flaky_test_attempts=2: a test that fails once and passes on the
+# retry would go green as FLAKY, which nobody reads in a passing job. The weekly
+# scheduled run (ci.yml) is there to surface exactly those tests.
+test:ci --flaky_test_attempts=1
+# CI logs are not a terminal: keep the colours (the preset's --color=yes), drop the
+# redrawn progress bar (the preset turns it on), and let the test runners colour
+# their output too.
 common:ci --curses=no
 test:ci --test_env=FORCE_COLOR=1
 
@@ -52,9 +72,13 @@ common:buildbuddy --remote_cache=grpcs://remote.buildbuddy.io
 common:buildbuddy --remote_cache_compression
 common:buildbuddy --remote_timeout=10m
 common:buildbuddy --build_metadata=REPO_URL=https://github.com/huyhoang1706/durable-workflow-rs.git
-# Pull requests read the cache that main writes, but do not write to it.
+# Main writes the cache (the preset only uploads under :ci, and CI's user.bazelrc
+# puts this config after it); pull requests read it, but do not write to it.
+common:buildbuddy --remote_upload_local_results
 common:buildbuddy-readonly --config=buildbuddy
 common:buildbuddy-readonly --noremote_upload_local_results
 
-# Machine-local settings (a disk cache, the BuildBuddy key, ...). Git-ignored.
+########################
+# Machine-local settings (a disk cache, the BuildBuddy key, ...). Git-ignored. Last,
+# so they override everything above.
 try-import %workspace%/user.bazelrc

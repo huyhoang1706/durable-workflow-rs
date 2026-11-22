@@ -50,6 +50,8 @@ CORPUS_DATA = ["//crates/durable-testkit:corpus"]
 def _dedupe(items):
     return {item: None for item in items}.keys()
 
+# No `name`: it declares every target of the package, each named after what Cargo calls it.
+# buildifier: disable=unnamed-macro
 def durable_rust_crate(
         crate_data,
         all_crate_deps,
@@ -86,6 +88,14 @@ def durable_rust_crate(
       visibility: Visibility of the library, binaries and shared libraries.
     """
     data = crate_data()
+
+    # This package's BUILD.bazel for the buildifier lint aspect (tools/lint/linters.bzl),
+    # so every crate is linted without a filegroup of its own.
+    native.filegroup(
+        name = "starlark_files",
+        srcs = ["BUILD.bazel"],
+        tags = ["starlark"],
+    )
 
     # The directory name: `//crates/<dir>` is the label other members' generated
     # dependency lists point at.

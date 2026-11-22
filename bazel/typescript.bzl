@@ -5,7 +5,7 @@
 # `platformTriple()` in durable-workflow-ts/ts/native.ts computes at run time. Each maps
 # to the constraints of the target platform; `//bazel:<triple>` is a config_setting.
 NAPI_TRIPLES = {
-    "linux-x64-gnu": ["@platforms//os:linux", "@platforms//cpu:x86_64"],
-    "linux-arm64-gnu": ["@platforms//os:linux", "@platforms//cpu:aarch64"],
     "darwin-arm64": ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+    "linux-arm64-gnu": ["@platforms//os:linux", "@platforms//cpu:aarch64"],
+    "linux-x64-gnu": ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 }
