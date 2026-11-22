@@ -4,6 +4,13 @@
 # their own containers, so Docker must be running.
 set -euo pipefail
 cargo fmt --all --check
+# Shell and Starlark formatting (shfmt, buildifier), which CI checks too. rules_lint
+# runs them, so this needs Bazel (bazelisk); without it, run it before you push.
+if command -v bazel >/dev/null; then
+    bazel run //:format.check
+else
+    echo "warning: bazel not found; skipping shfmt/buildifier (bazel run //:format.check)" >&2
+fi
 
 # Bazel builds the same crates (docs/bazel.md). It needs no Bazel to check, and it is
 # the one thing a Cargo-only change can forget: a new crate needs a BUILD.bazel.

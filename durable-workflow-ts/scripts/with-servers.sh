@@ -43,9 +43,17 @@ start() {
     return 1
 }
 
-# The host port Docker published for a container port.
+# The host port Docker published for a container port; fails when there is none.
+# `sed -n`, not `head`: it reads all of `docker port`'s output (IPv4 and IPv6 lines),
+# so `docker port` never dies of SIGPIPE, which pipefail would turn into a failure.
 host_port() {
-    docker port "$1" "$2" | head -n 1 | sed 's/.*://'
+    local port
+    port=$(docker port "$1" "$2" | sed -n '1s/.*://p')
+    if [[ -z $port ]]; then
+        echo "error: container $1 publishes no host port for $2" >&2
+        return 1
+    fi
+    echo "$port"
 }
 
 wait_until() {
@@ -70,7 +78,8 @@ containers+=("$redis")
 wait_until "Postgres" docker exec "$pg" pg_isready -U postgres -h 127.0.0.1 -q
 wait_until "Redis" docker exec "$redis" redis-cli ping
 
-# Assigned before `export`, so a failing host_port stops the script (set -e).
+# Assigned before `export`, so a failing host_port (no published port) stops the
+# script (set -e) instead of exporting a URL without a port.
 pg_port=$(host_port "$pg" 5432/tcp)
 redis_port=$(host_port "$redis" 6379/tcp)
 export DURABLE_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$pg_port/durable"

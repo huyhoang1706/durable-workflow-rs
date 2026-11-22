@@ -11,3 +11,10 @@ format_multirun(
     starlark = "@multitool//tools/buildifier",
     visibility = ["//:__pkg__"],
 )
+
+# Starlark files for the buildifier lint aspect (tools/lint/linters.bzl).
+filegroup(
+    name = "starlark_files",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

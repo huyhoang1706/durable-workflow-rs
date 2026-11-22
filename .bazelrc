@@ -49,6 +49,10 @@ common:ci --lockfile_mode=update
 common:ci --keep_going
 common:ci --verbose_failures
 common:ci --build_metadata=ROLE=CI
+# Not the preset's --flaky_test_attempts=2: a test that fails once and passes on the
+# retry would go green as FLAKY, which nobody reads in a passing job. The weekly
+# scheduled run (ci.yml) is there to surface exactly those tests.
+test:ci --flaky_test_attempts=1
 # CI logs are not a terminal: keep the colours (the preset's --color=yes), drop the
 # redrawn progress bar (the preset turns it on), and let the test runners colour
 # their output too.

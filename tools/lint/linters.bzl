@@ -6,7 +6,7 @@ Each one visits the existing targets: nothing is added to the BUILD files.
   same lints as `cargo clippy` (clippy.toml at the root, `[lints]` from Cargo.toml).
 - shellcheck: sh_binary / sh_library / sh_test sources.
 - buildifier: filegroups tagged "starlark" (//:starlark_files, //bazel:starlark_files,
-  ...) and bzl_library targets.
+  ...; durable_rust_crate declares one for each crate) and bzl_library targets.
 
 A target opts out with the `no-lint` tag (clippy also honours `noclippy`).
 """

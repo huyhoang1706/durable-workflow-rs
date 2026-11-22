@@ -1,1 +1,11 @@
 # Linter aspects live in linters.bzl; `bazel build --config=lint //...` runs them.
+
+# Starlark files for the buildifier lint aspect (tools/lint/linters.bzl).
+filegroup(
+    name = "starlark_files",
+    srcs = [
+        "BUILD.bazel",
+        "linters.bzl",
+    ],
+    tags = ["starlark"],
+)
