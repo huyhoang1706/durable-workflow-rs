@@ -662,13 +662,20 @@ async fn deterministic_helpers_are_stable_across_replays() {
     h.suspended(id).await;
     h.advance(10);
     h.succeeded(id).await;
+    // At least twice (initial + replay after the timer), not exactly: a reconciler
+    // tick during the first execution, while the run is still `pending` and due,
+    // queues a rerun, and the run is replayed once more before the timer fires.
+    // Every replay must see the same values either way.
     let seen = seen.lock();
-    assert_eq!(
-        seen.len(),
-        2,
-        "body should have executed twice (initial + replay)"
+    assert!(
+        seen.len() >= 2,
+        "body should have executed at least twice (initial + replay), ran {}",
+        seen.len()
     );
-    assert_eq!(seen[0], seen[1]);
+    assert!(
+        seen.iter().all(|v| *v == seen[0]),
+        "values differ: {seen:?}"
+    );
 }
 
 #[tokio::test]
