@@ -52,7 +52,7 @@ Common types:
 - `refactor`: restructure code without changing behavior, e.g. `refactor(config): move config to pydantic-settings`
 - `chore`: maintenance such as dependency updates, e.g. `chore: bump ruff to v0.4.0`
 
-  Scope is optional but recommended: `agent`, `api`, `config`, `models`, `tests`, or another module name.
+Scope is optional but recommended: `agent`, `api`, `config`, `models`, `tests`, or another module name.
 - Workflow bodies must be deterministic: side effects only inside steps, and use `ctx.now()` / `ctx.random_u64()` / `ctx.uuid()` instead of system time/RNG. Engine code relies on this when matching steps by key (name plus occurrence counter; names may not contain `#`, `[` or `]`).
 
 ## Preferences
