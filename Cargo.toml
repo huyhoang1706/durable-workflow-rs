@@ -5,7 +5,7 @@ members = ["durable-workflow-rs", "durable-workflow-ts", "crates/*", "plugins/*"
 exclude = ["examples/typescript-onboarding"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
